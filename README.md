@@ -13,7 +13,7 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
    - Visualisasi *real-time* **Grid 2x2 ROI Wajah ($110\times 110$):** `1.Gray+CLAHE`, `2.Gauss 5x5`, `3.Otsu Biner`, dan `4.Canny Edge`.
 2. **Hardware-Locked 3D Gaze Ray-Casting (`cm`) & Anti-Spoof:**
    - Geometri fisik perangkat dikunci di sisi sistem (**Lenovo IdeaPad Slim 5 14IMH9**: layar `14.0"` `16:10` $30.16 \times 18.85\text{ cm}$ + dek keyboard/touchpad $21.0\text{ cm}$), **mustahil diperlebar/diakali peserta**.
-   - Memicu kuning seketika saat pandangan keluar **`> 1.0 cm`** di sisi kiri, kanan, atau atas bezel layar (`IND-01` / `IND-02`), maupun tepat mencapai ujung akhir bawah touchpad **`>= 21.0 cm`** (`IND-02`).
+   - Memicu kuning seketika saat pandangan keluar area layar laptop di sisi kiri, kanan, atau atas layar (`IND-01` / `IND-02`), maupun tepat mencapai ujung akhir bawah touchpad **`>= 21.0 cm`** (`IND-02`).
    - Dilengkapi **EMA Smoothing ($\alpha = 0.42$)**, kompensasi **VOR (Vestibulo-Ocular Reflex)**, serta **EAR Blink Guard ($\text{EAR} \ge 0.12$)**.
 3. **5-Layer Anti-Spoof Lens Calibration (`2.0 Detik`):**
    - Peserta cukup menatap lurus **Lensa Fisik Webcam** di bezel atas selama 2 detik. Jika peserta mencoba melirik ke samping/atas/bawah atau menoleh saat kalibrasi, sistem **menolak kalibrasi secara otomatis**.
@@ -49,10 +49,10 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
 | Kode Uji | Skenario Perilaku | Durasi Tahan | Kode Harapan | Hasil Aktual (TP / FP / FN) |
 | :---: | :--- | :---: | :---: | :--- |
 | **UJI-01** | Fokus menatap seluruh sudut layar, keyboard, & berkedip wajar | $10.0\text{ s}$ | `NORMAL` | ... |
-| **UJI-02** | Menolehkan kepala keluar $> 1\text{ cm}$ kiri / kanan layar | $\ge 2.5\text{ s}$ | `IND-01` (Menoleh) | ... |
-| **UJI-03** | Kepala diam, bola mata melirik $> 1\text{ cm}$ di luar kiri / kanan layar | $\ge 2.5\text{ s}$ | `IND-01` (Melirik Mata) | ... |
-| **UJI-04** | Menunduk melewati ujung akhir touchpad ($\ge 21\text{ cm}$) / mendongak $> 1\text{ cm}$ atas layar | $\ge 3.0\text{ s}$ | `IND-02` (Menunduk/Mendongak) | ... |
-| **UJI-05** | Kepala diam, bola mata melirik $> 1\text{ cm}$ atas bezel / lewat ujung akhir touchpad | $\ge 2.5\text{ s}$ | `IND-02` (Melirik Mata) | ... |
+| **UJI-02** | Menolehkan kepala keluar dari batas kiri / kanan layar ($|X| > 22.1\text{ cm}$) | $\ge 2.5\text{ s}$ | `IND-01` (Menoleh) | ... |
+| **UJI-03** | Kepala diam, bola mata melirik di luar kiri / kanan layar ($|X| > 22.1\text{ cm}$) | $\ge 2.5\text{ s}$ | `IND-01` (Melirik Mata) | ... |
+| **UJI-04** | Menunduk melewati ujung akhir touchpad ($\ge 21\text{ cm}$) / mendongak di atas layar ($Y < -7.0\text{ cm}$) | $\ge 3.0\text{ s}$ | `IND-02` (Menunduk/Mendongak) | ... |
+| **UJI-05** | Kepala diam, bola mata melirik di atas layar ($Y < -7.0\text{ cm}$) / lewat ujung akhir touchpad | $\ge 2.5\text{ s}$ | `IND-02` (Melirik Mata) | ... |
 | **UJI-06** | Orang kedua masuk ke tangkapan kamera | $\ge 1.0\text{ s}$ | `IND-03` (>1 Orang) | ... |
 | **UJI-07** | Peserta meninggalkan kursi (latar ruangan terlihat) | $\ge 3.0\text{ s}$ | `IND-04` (Wajah Hilang) | ... |
 | **UJI-08** | Lensa kamera ditutup telapak tangan gelap | $\ge 2.0\text{ s}$ | `IND-05` (Gelap $\mu_Y < 35$) | ... |

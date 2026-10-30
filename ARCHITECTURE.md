@@ -6,11 +6,11 @@ Dokumen ini mendefinisikan batas modul, *invariants* keamanan Anti-Spoof, aliran
 ---
 
 ## 1. Core Architectural Invariants (Aturan Mati Sistem)
-1. **Hardware-Locked Safe Zone (Zero User Boundary Spoofing):** Batas zona aman layar ($\pm 16.08\text{ cm}$ horizontal, $-1.0\text{ cm}$ bezel atas) dan titik akhir bawah touchpad ($21.0\text{ cm}$ dari engsel) dikunci pada `DetectorConfig`. Peserta ujian **tidak pernah** menginput batas tepi, sehingga mustahil memperlebar zona aman (*immune to calibration poisoning*).
+1. **Hardware-Locked Safe Zone (Zero User Boundary Spoofing):** Batas zona aman layar ($\pm 22.08\text{ cm}$ horizontal, $-7.0\text{ cm}$ bezel atas) dan titik akhir bawah touchpad ($21.0\text{ cm}$ dari engsel) dikunci pada `DetectorConfig`. Peserta ujian **tidak pernah** menginput batas tepi, sehingga mustahil memperlebar zona aman (*immune to calibration poisoning*).
 2. **Unidirectional Pure Pipeline:** Pemrosesan citra di `src/pcd_pipeline.py` dan proyeksi sinar 3D di `src/detector.py` bebas efek samping I/O sehingga dapat diuji deterministik di `tests/test_detector_logic.py`.
 3. **Monotonic Timestamps & Non-Blocking Audio:** Seluruh durasi wajib dihitung menggunakan `time.monotonic()`, `FaceMeshDetector` menjamin `timestamp_ms` naik ketat (`strictly increasing`), dan bunyi bip kalibrasi dijalankan di *daemon thread*.
 4. **Urutan Prioritas Deterministik:**
-   `IND-05 (Gelap/Oklusi)` $\rightarrow$ `IND-03 (>1 Wajah)` $\rightarrow$ `IND-04 (0 Wajah)` $\rightarrow$ `IND-01 (|X_hit| > 16.08 cm)` $\rightarrow$ `IND-02 (Y_scr < -1.0 cm atau Deck_Z >= 21.0 cm)` $\rightarrow$ `NORMAL`.
+   `IND-05 (Gelap/Oklusi)` $\rightarrow$ `IND-03 (>1 Wajah)` $\rightarrow$ `IND-04 (0 Wajah)` $\rightarrow$ `IND-01 (|X_hit| > 22.08 cm)` $\rightarrow$ `IND-02 (Y_scr < -7.0 cm atau Deck_Z >= 21.0 cm)` $\rightarrow$ `NORMAL`.
 
 ---
 
@@ -67,7 +67,7 @@ stateDiagram-v2
     CALIBRATING --> UNCALIBRATED: Gagal 5-Layer Anti-Spoof / Wajah != 1 (Beep Rendah)
     CALIBRATING --> SAFE: Lulus Validasi Lensa (Simpan Offset Anatomi & Sudut Engsel)
     SAFE --> CALIBRATING: Tekan SPASI/C Ulang
-    SAFE --> WARNING: Sinar 3D Keluar Batas 1cm Layar / >=21cm Touchpad
+    SAFE --> WARNING: Sinar 3D Keluar Batas Layar / >=21cm Touchpad
     WARNING --> SAFE: Kembali ke Zona Aman >= 0.3s
     WARNING --> ALERT: Durasi >= Ambang Indikasi
     ALERT --> SAFE: Kembali ke Zona Aman >= 0.3s
