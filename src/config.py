@@ -1,4 +1,4 @@
-"""Konfigurasi sistem, Enum kode indikasi, dan Dataclass state pemantauan ujian."""
+"""Konfigurasi sistem, Enum kode indikasi/kalibrasi 5 titik, dan Dataclass state pemantauan."""
 
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -17,11 +17,30 @@ class IndicationCode(StrEnum):
     """Kode standar indikasi perilaku ujian sesuai spesifikasi PRD & AGENTS.md."""
 
     NORMAL = "NORMAL"
-    IND_01 = "IND-01"  # Penyimpangan Horizontal (Menoleh / Melirik Keluar Sisi Layar)
-    IND_02 = "IND-02"  # Penyimpangan Vertikal (Menunduk-Mendongak / Melirik Keluar Atas-Bawah)
+    IND_01 = "IND-01"  # Penyimpangan Horizontal (>1 cm di luar tepi kiri/kanan layar)
+    IND_02 = "IND-02"  # Penyimpangan Vertikal (>1 cm di atas layar / mencapai ujung akhir touchpad)
     IND_03 = "IND-03"  # Terdeteksi >1 Orang
     IND_04 = "IND-04"  # Wajah Tidak Terdeteksi
     IND_05 = "IND-05"  # Kamera Tertutup / Gelap / Oklusi Polos
+
+
+class CalibrationStage(StrEnum):
+    """Lima tahapan kalibrasi batas fisik laptop secara berurutan."""
+
+    CENTER = "CENTER"
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
+    TOP = "TOP"
+    TOUCHPAD = "TOUCHPAD"
+
+
+CALIBRATION_SEQUENCE: tuple[CalibrationStage, ...] = (
+    CalibrationStage.CENTER,
+    CalibrationStage.LEFT,
+    CalibrationStage.RIGHT,
+    CalibrationStage.TOP,
+    CalibrationStage.TOUCHPAD,
+)
 
 
 class BannerState(StrEnum):
@@ -43,8 +62,18 @@ class IntegrityLevel(StrEnum):
 
 
 @dataclass(frozen=True)
+class SafeZoneBounds:
+    """Batas koordinat gabungan kepala + mata (Point-of-Regard) hasil kalibrasi 5 titik fisik."""
+
+    min_por_x: float  # Batas ~1 cm di luar tepi kiri fisik layar
+    max_por_x: float  # Batas ~1 cm di luar tepi kanan fisik layar
+    min_por_y: float  # Batas ~1 cm di atas bezel atas / webcam
+    max_por_y: float  # Batas tepat di titik akhir bawah touchpad
+
+
+@dataclass(frozen=True)
 class DetectorConfig:
-    """Parameter konfigurasi pengolahan citra, geometri kepala/mata, VOR, EMA, dan aturan temporal."""
+    """Parameter konfigurasi pengolahan citra, geometri Point-of-Regard, EMA, dan aturan temporal."""
 
     frame_width: int = 640
     frame_height: int = 480
@@ -59,23 +88,31 @@ class DetectorConfig:
     min_luminance: float = 35.0
     min_global_edge_density: float = 1.0
 
-    # Parameter Geometri Landmark Kepala, Zona Aman Layar Iris, & Kompensasi VOR
+    # Parameter Geometri Kepala + Iris Unified Point-of-Regard (POR)
     max_num_faces: int = 3
     min_detection_confidence: float = 0.6
     min_presence_confidence: float = 0.6
     min_tracking_confidence: float = 0.6
-    ema_alpha: float = 0.35
+    ema_alpha: float = 0.45
+    yaw_to_gaze_gain: float = 0.55
+    pitch_to_gaze_gain: float = 0.85
+    head_label_yaw_delta: float = 0.12
+    head_label_pitch_delta: float = 0.08
+    min_ear_for_gaze: float = 0.09
+
+    # Fallback default apabila menggunakan kalibrasi 1 titik pada unit test
     tol_yaw: float = 0.15
     tol_pitch: float = 0.10
-    tol_gaze_x: float = 0.135
-    tol_gaze_up: float = 0.13
-    tol_gaze_down: float = 0.13
-    vor_pitch_compensation: float = 0.80
-    min_ear_for_gaze: float = 0.15
+    tol_gaze_x: float = 0.11
+    tol_gaze_up: float = 0.08
+    tol_gaze_down: float = 0.11
 
-    # Parameter Kalibrasi Hitung Mundur (Mencegah Jebakan Melihat Keyboard)
-    calibration_countdown_sec: float = 2.0
+    # Parameter Kalibrasi 5 Titik Batas Fisik (~1 cm luar layar & tepat akhir touchpad)
+    calibration_stage_sec: float = 2.0
     calibration_sample_window_sec: float = 0.8
+    screen_edge_margin_ratio_x: float = 0.06  # ~1 cm pada setengah lebar layar ~17 cm
+    screen_edge_margin_ratio_top: float = 0.10  # ~1 cm pada jarak tengah-ke-atas ~10 cm
+    touchpad_end_offset: float = -0.002  # Langsung kuning tepat di titik akhir touchpad
 
     # Parameter Temporal (Detik) & Penilaian Trust Score
     thresh_yaw_sec: float = 2.5
@@ -96,7 +133,7 @@ class DetectorConfig:
 
     def threshold_for(self, code: IndicationCode, behavior_label: str = "") -> float:
         """Mengembalikan ambang durasi (detik) berdasarkan kode dan subtipe perilaku."""
-        if "MELIRIK MATA" in behavior_label:
+        if "MELIRIK" in behavior_label:
             return self.thresh_gaze_sec
 
         thresholds: dict[IndicationCode, float] = {
@@ -111,19 +148,24 @@ class DetectorConfig:
 
 @dataclass
 class MonitoringState:
-    """State dinamis sesi pemantauan peserta termasuk kalibrasi hitung mundur & sinyal EMA."""
+    """State dinamis sesi pemantauan peserta termasuk kalibrasi 5 titik & batas SafeZoneBounds."""
 
     baseline_yaw: float = 0.50
     baseline_pitch: float = 0.35
     baseline_gaze_x: float = 0.50
     baseline_gaze_y: float = -0.11
+    safe_bounds: SafeZoneBounds | None = None
     smoothed_yaw: float | None = None
     smoothed_pitch: float | None = None
     smoothed_gaze_x: float | None = None
     smoothed_gaze_y: float | None = None
     is_calibrated: bool = False
+    calibration_stage_idx: int | None = None
     calibration_deadline: float | None = None
     calibration_samples: list[tuple[float, float, float, float]] = field(default_factory=list)
+    stage_averages: dict[CalibrationStage, tuple[float, float, float, float]] = field(
+        default_factory=dict
+    )
     trust_score: float = 100.0
     total_flags: int = 0
     active_code: IndicationCode = IndicationCode.NORMAL
@@ -134,19 +176,32 @@ class MonitoringState:
 
     @property
     def is_calibrating(self) -> bool:
-        """Bernilai True apabila sedang dalam proses hitung mundur kalibrasi."""
-        return self.calibration_deadline is not None
+        """Bernilai True apabila sedang dalam proses kalibrasi 5 titik."""
+        return self.calibration_stage_idx is not None and self.calibration_deadline is not None
 
-    def start_calibration_countdown(self, now_monotonic: float, duration_sec: float) -> None:
-        """Memulai hitung mundur agar mata peserta sempat kembali menatap tengah layar."""
-        self.calibration_deadline = now_monotonic + duration_sec
+    @property
+    def current_calibration_stage(self) -> CalibrationStage | None:
+        """Mengembalikan tahapan kalibrasi aktif saat ini (CENTER/LEFT/RIGHT/TOP/TOUCHPAD)."""
+        if self.calibration_stage_idx is None:
+            return None
+        if 0 <= self.calibration_stage_idx < len(CALIBRATION_SEQUENCE):
+            return CALIBRATION_SEQUENCE[self.calibration_stage_idx]
+        return None
+
+    def start_five_point_calibration(self, now_monotonic: float, stage_sec: float) -> None:
+        """Memulai rangkaian kalibrasi 5 titik fisik dari tahap pertama (CENTER)."""
+        self.calibration_stage_idx = 0
+        self.calibration_deadline = now_monotonic + stage_sec
         self.calibration_samples.clear()
+        self.stage_averages.clear()
         self.clear_active_behavior()
 
-    def cancel_calibration_countdown(self) -> None:
-        """Membatalkan hitung mundur kalibrasi apabila jumlah wajah tidak valid."""
+    def cancel_calibration(self) -> None:
+        """Membatalkan proses kalibrasi apabila wajah hilang atau >1 orang."""
+        self.calibration_stage_idx = None
         self.calibration_deadline = None
         self.calibration_samples.clear()
+        self.stage_averages.clear()
 
     def update_ema(
         self,
@@ -188,26 +243,45 @@ class MonitoringState:
         self.smoothed_gaze_x = None
         self.smoothed_gaze_y = None
 
+    def apply_calibrated_bounds(
+        self,
+        yaw: float,
+        pitch: float,
+        gaze_x: float,
+        gaze_y: float,
+        bounds: SafeZoneBounds,
+    ) -> None:
+        """Menyimpan titik tengah dan batas zona aman 4 sisi hasil kalibrasi 5 titik."""
+        self.baseline_yaw = yaw
+        self.baseline_pitch = pitch
+        self.baseline_gaze_x = gaze_x
+        self.baseline_gaze_y = gaze_y
+        self.safe_bounds = bounds
+        self.smoothed_yaw = yaw
+        self.smoothed_pitch = pitch
+        self.smoothed_gaze_x = gaze_x
+        self.smoothed_gaze_y = gaze_y
+        self.cancel_calibration()
+        self.is_calibrated = True
+        self.clear_active_behavior()
+
     def calibrate(
         self,
         yaw: float,
         pitch: float,
         gaze_x: float = 0.50,
         gaze_y: float = -0.11,
+        config: DetectorConfig | None = None,
     ) -> None:
-        """Menetapkan titik acuan orientasi kepala dan bola mata peserta secara langsung."""
-        self.baseline_yaw = yaw
-        self.baseline_pitch = pitch
-        self.baseline_gaze_x = gaze_x
-        self.baseline_gaze_y = gaze_y
-        self.smoothed_yaw = yaw
-        self.smoothed_pitch = pitch
-        self.smoothed_gaze_x = gaze_x
-        self.smoothed_gaze_y = gaze_y
-        self.calibration_deadline = None
-        self.calibration_samples.clear()
-        self.is_calibrated = True
-        self.clear_active_behavior()
+        """Kalibrasi langsung 1 titik (membentuk batas default simetris di sekitar titik acuan)."""
+        cfg = config or DetectorConfig()
+        bounds = SafeZoneBounds(
+            min_por_x=gaze_x - cfg.tol_gaze_x,
+            max_por_x=gaze_x + cfg.tol_gaze_x,
+            min_por_y=gaze_y - cfg.tol_gaze_up,
+            max_por_y=gaze_y + cfg.tol_gaze_down,
+        )
+        self.apply_calibrated_bounds(yaw, pitch, gaze_x, gaze_y, bounds)
 
     def clear_active_behavior(self) -> None:
         """Mereset status perilaku mencurigakan kembali ke kondisi NORMAL."""

@@ -1,4 +1,4 @@
-"""Detektor MediaPipe Tasks FaceLandmarker, kalkulasi geometri kepala & iris VOR, serta logika temporal."""
+"""Detektor MediaPipe Tasks FaceLandmarker, Unified Point-of-Regard (POR), & kalibrasi 5 titik."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -14,7 +14,15 @@ from mediapipe.tasks.python import BaseOptions, vision
 import numpy as np
 from numpy.typing import NDArray
 
-from src.config import BannerState, DetectorConfig, IndicationCode, MonitoringState
+from src.config import (
+    CALIBRATION_SEQUENCE,
+    BannerState,
+    CalibrationStage,
+    DetectorConfig,
+    IndicationCode,
+    MonitoringState,
+    SafeZoneBounds,
+)
 
 UInt8Image = NDArray[np.uint8]
 
@@ -42,6 +50,14 @@ LEFT_EYE_OUTER_IDX: int = R_EYE_OUTER_IDX
 RIGHT_EYE_OUTER_IDX: int = L_EYE_OUTER_IDX
 
 BBOX_PADDING_PX: int = 15
+
+STAGE_PROMPTS: dict[CalibrationStage, str] = {
+    CalibrationStage.CENTER: "1/5 TATAP TENGAH LAYAR FISIK LAPTOP",
+    CalibrationStage.LEFT: "2/5 TATAP BINGKAI TEPI KIRI LAYAR",
+    CalibrationStage.RIGHT: "3/5 TATAP BINGKAI TEPI KANAN LAYAR",
+    CalibrationStage.TOP: "4/5 TATAP BEZEL ATAS LAYAR / WEBCAM",
+    CalibrationStage.TOUCHPAD: "5/5 TATAP TITIK AKHIR BAWAH TOUCHPAD",
+}
 
 
 class LandmarkPoint(Protocol):
@@ -79,6 +95,7 @@ class TemporalStepResult:
     effective_label: str
     elapsed_sec: float
     should_log_evidence: bool
+    calibration_event: str | None = None  # "NEXT_STAGE" atau "COMPLETED" untuk sinyal suara
 
 
 def ensure_landmarker_model(model_path: Path, model_url: str) -> Path:
@@ -128,12 +145,7 @@ def calculate_yaw_pitch(landmarks: Sequence[LandmarkPoint]) -> tuple[float, floa
 def calculate_iris_gaze_and_ear(
     landmarks: Sequence[LandmarkPoint],
 ) -> tuple[float, float, float]:
-    """
-    Menghitung rasio posisi pupil/iris mata (Gaze X, Gaze Y) dan Eye Aspect Ratio (EAR):
-    - Gaze X: posisi horizontal pupil di antara sudut mata kiri-kanan (0.50 = tengah layar).
-    - Gaze Y: posisi vertikal pupil relatif garis sudut mata dibagi lebar mata.
-    - EAR   : rasio bukaan kelopak vertikal terhadap lebar mata untuk memfilter kedipan alami.
-    """
+    """Menghitung rasio posisi pupil/iris mata (Gaze X, Gaze Y) dan Eye Aspect Ratio (EAR)."""
     if len(landmarks) <= L_IRIS_CENTER_IDX:
         return 0.50, -0.11, 0.30
 
@@ -155,6 +167,74 @@ def calculate_iris_gaze_and_ear(
     ear = (r_ear + l_ear) / 2.0
 
     return float(gaze_x), float(gaze_y), float(ear)
+
+
+def compute_point_of_regard(
+    yaw: float,
+    pitch: float,
+    gaze_x: float,
+    gaze_y: float,
+    ear: float,
+    baseline_yaw: float,
+    baseline_pitch: float,
+    baseline_gaze_x: float,
+    baseline_gaze_y: float,
+    config: DetectorConfig,
+) -> tuple[float, float]:
+    """
+    Menghitung koordinat pandangan gabungan kepala + bola mata (Unified Point-of-Regard):
+    - POR_x = Gaze_x + k_x * (Yaw - Yaw_center)
+    - POR_y = Gaze_y + k_y * (Pitch - Pitch_center)
+    Saat kelopak mata tertutup rapat karena berkedip (EAR < min_ear_for_gaze), posisi iris
+    diganti baseline_gaze agar kedipan tidak menimbulkan lonjakan namun gerakan kepala tetap aktif.
+    """
+    eff_gx = gaze_x if ear >= config.min_ear_for_gaze else baseline_gaze_x
+    eff_gy = gaze_y if ear >= config.min_ear_for_gaze else baseline_gaze_y
+
+    por_x = eff_gx + config.yaw_to_gaze_gain * (yaw - baseline_yaw)
+    por_y = eff_gy + config.pitch_to_gaze_gain * (pitch - baseline_pitch)
+    return float(por_x), float(por_y)
+
+
+def build_safe_zone_bounds(
+    stage_averages: dict[CalibrationStage, tuple[float, float, float, float]],
+    config: DetectorConfig,
+) -> tuple[tuple[float, float, float, float], SafeZoneBounds]:
+    """
+    Menghitung batas zona aman 4 sisi dari hasil rata-rata 5 titik fisik laptop:
+    - Kiri, Kanan, dan Atas diberi margin proporsional ~1 cm di luar bingkai layar.
+    - Bawah dikunci tepat pada titik akhir bawah touchpad.
+    """
+    c_yaw, c_pitch, c_gx, c_gy = stage_averages[CalibrationStage.CENTER]
+
+    def _stage_por(stage: CalibrationStage) -> tuple[float, float]:
+        s_yaw, s_pitch, s_gx, s_gy = stage_averages[stage]
+        return (
+            s_gx + config.yaw_to_gaze_gain * (s_yaw - c_yaw),
+            s_gy + config.pitch_to_gaze_gain * (s_pitch - c_pitch),
+        )
+
+    left_por_x, _ = _stage_por(CalibrationStage.LEFT)
+    right_por_x, _ = _stage_por(CalibrationStage.RIGHT)
+    _, top_por_y = _stage_por(CalibrationStage.TOP)
+    _, touchpad_por_y = _stage_por(CalibrationStage.TOUCHPAD)
+
+    span_left = max(0.025, c_gx - left_por_x)
+    span_right = max(0.025, right_por_x - c_gx)
+    span_top = max(0.020, c_gy - top_por_y)
+    span_bottom = max(0.030, touchpad_por_y - c_gy)
+
+    margin_left = min(max(0.005, config.screen_edge_margin_ratio_x * span_left), 0.012)
+    margin_right = min(max(0.005, config.screen_edge_margin_ratio_x * span_right), 0.012)
+    margin_top = min(max(0.005, config.screen_edge_margin_ratio_top * span_top), 0.012)
+
+    bounds = SafeZoneBounds(
+        min_por_x=(c_gx - span_left) - margin_left,
+        max_por_x=(c_gx + span_right) + margin_right,
+        min_por_y=(c_gy - span_top) - margin_top,
+        max_por_y=(c_gy + span_bottom) + config.touchpad_end_offset,
+    )
+    return (c_yaw, c_pitch, c_gx, c_gy), bounds
 
 
 def _clamp_pixel(norm_x: float, norm_y: float, width: int, height: int) -> tuple[int, int]:
@@ -244,24 +324,25 @@ def smooth_primary_face_pose(
     return [smoothed_primary, *faces[1:]]
 
 
-def advance_calibration_countdown(
+def advance_five_point_calibration(
     state: MonitoringState,
-    faces: Sequence[DetectedFace],
+    raw_faces: Sequence[DetectedFace],
     now_monotonic: float,
     config: DetectorConfig,
 ) -> TemporalStepResult | None:
     """
-    Memproses fase hitung mundur kalibrasi agar peserta sempat mengangkat mata dari keyboard
-    ke tengah layar, lalu mengambil rata-rata sampel stabil pada 0.8 detik terakhir.
+    Menjalankan mesin tahapan kalibrasi 5 titik (CENTER -> LEFT -> RIGHT -> TOP -> TOUCHPAD)
+    menggunakan sampel mentah bebas lag pada jendela 0.8 detik terakhir tiap tahap.
     """
-    if state.calibration_deadline is None:
+    stage = state.current_calibration_stage
+    if stage is None or state.calibration_deadline is None:
         return None
 
-    if len(faces) != 1:
-        state.cancel_calibration_countdown()
+    if len(raw_faces) != 1:
+        state.cancel_calibration()
         return TemporalStepResult(
             banner_state=BannerState.UNCALIBRATED,
-            banner_text="KALIBRASI BATAL: PASTIKAN TEPAT 1 WAJAH DI LAYAR",
+            banner_text="KALIBRASI BATAL: PASTIKAN TEPAT 1 WAJAH DI KAMERA",
             effective_code=IndicationCode.NORMAL,
             effective_label="KALIBRASI BATAL",
             elapsed_sec=0.0,
@@ -269,16 +350,17 @@ def advance_calibration_countdown(
         )
 
     remaining = state.calibration_deadline - now_monotonic
-    primary = faces[0]
+    primary = raw_faces[0]
     if remaining <= config.calibration_sample_window_sec:
         state.calibration_samples.append(
             (primary.yaw, primary.pitch, primary.gaze_x, primary.gaze_y)
         )
 
+    prompt = STAGE_PROMPTS[stage]
     if remaining > 0.0:
         return TemporalStepResult(
             banner_state=BannerState.CALIBRATING,
-            banner_text=f"KALIBRASI DALAM {remaining:.1f}s: TATAP TITIK TENGAH LAYAR!",
+            banner_text=f"{prompt} ({remaining:.1f}s)",
             effective_code=IndicationCode.NORMAL,
             effective_label="PROSES KALIBRASI",
             elapsed_sec=0.0,
@@ -289,23 +371,45 @@ def advance_calibration_countdown(
         (primary.yaw, primary.pitch, primary.gaze_x, primary.gaze_y)
     ]
     n_samples = len(samples)
-    avg_yaw = sum(s[0] for s in samples) / n_samples
-    avg_pitch = sum(s[1] for s in samples) / n_samples
-    avg_gx = sum(s[2] for s in samples) / n_samples
-    avg_gy = sum(s[3] for s in samples) / n_samples
-    state.calibrate(avg_yaw, avg_pitch, avg_gx, avg_gy)
-    print(
-        f"[KALIBRASI SELESAI ({n_samples} sampel)] "
-        f"Yaw:{avg_yaw:.3f} Pitch:{avg_pitch:.3f} | EyeX:{avg_gx:.3f} EyeY:{avg_gy:+.3f}"
+    avg_tuple = (
+        sum(s[0] for s in samples) / n_samples,
+        sum(s[1] for s in samples) / n_samples,
+        sum(s[2] for s in samples) / n_samples,
+        sum(s[3] for s in samples) / n_samples,
     )
+    state.stage_averages[stage] = avg_tuple
+    state.calibration_samples.clear()
 
+    next_idx = (state.calibration_stage_idx or 0) + 1
+    if next_idx < len(CALIBRATION_SEQUENCE):
+        state.calibration_stage_idx = next_idx
+        state.calibration_deadline = now_monotonic + config.calibration_stage_sec
+        next_stage = CALIBRATION_SEQUENCE[next_idx]
+        return TemporalStepResult(
+            banner_state=BannerState.CALIBRATING,
+            banner_text=f"{STAGE_PROMPTS[next_stage]} ({config.calibration_stage_sec:.1f}s)",
+            effective_code=IndicationCode.NORMAL,
+            effective_label="PROSES KALIBRASI",
+            elapsed_sec=0.0,
+            should_log_evidence=False,
+            calibration_event="NEXT_STAGE",
+        )
+
+    center_vals, bounds = build_safe_zone_bounds(state.stage_averages, config)
+    state.apply_calibrated_bounds(*center_vals, bounds)
+    print(
+        f"[KALIBRASI 5 TITIK SELESAI] "
+        f"POR_X:[{bounds.min_por_x:.3f} .. {bounds.max_por_x:.3f}] | "
+        f"POR_Y:[{bounds.min_por_y:+.3f} .. {bounds.max_por_y:+.3f}]"
+    )
     return TemporalStepResult(
         banner_state=BannerState.SAFE,
-        banner_text="KALIBRASI BERHASIL: ZONA LAYAR AKTIF",
+        banner_text="KALIBRASI 5 TITIK BERHASIL: ZONA PRESISI AKTIF",
         effective_code=IndicationCode.NORMAL,
         effective_label="PESERTA FOKUS UJIAN",
         elapsed_sec=0.0,
         should_log_evidence=False,
+        calibration_event="COMPLETED",
     )
 
 
@@ -318,10 +422,12 @@ def evaluate_instant_indication(
     config: DetectorConfig,
     baseline_gaze_x: float = 0.50,
     baseline_gaze_y: float = -0.11,
+    safe_bounds: SafeZoneBounds | None = None,
 ) -> tuple[IndicationCode, str]:
     """
-    Mengevaluasi indikasi instan satu frame sesuai hierarki prioritas dengan
-    Screen Safe-Zone & kompensasi Vestibulo-Ocular Reflex (VOR) pada sumbu vertikal mata.
+    Mengevaluasi indikasi instan satu frame menggunakan Unified Point-of-Regard (POR_x, POR_y)
+    sehingga baik lirikan bola mata saja maupun gerakan kepala melewati batas 1 cm luar layar
+    atau titik akhir touchpad langsung terdeteksi secara simetris.
     """
     if mean_luminance < config.min_luminance:
         return IndicationCode.IND_05, "KAMERA TERTUTUP / RUANGAN GELAP"
@@ -336,31 +442,60 @@ def evaluate_instant_indication(
         return IndicationCode.IND_04, "WAJAH TIDAK TERDETEKSI"
 
     primary = faces[0]
+    bounds = safe_bounds or SafeZoneBounds(
+        min_por_x=baseline_gaze_x - config.tol_gaze_x,
+        max_por_x=baseline_gaze_x + config.tol_gaze_x,
+        min_por_y=baseline_gaze_y - config.tol_gaze_up,
+        max_por_y=baseline_gaze_y + config.tol_gaze_down,
+    )
 
-    # 1. Evaluasi Orientasi Kepala (Head Pose)
-    if primary.yaw < (baseline_yaw - config.tol_yaw):
-        return IndicationCode.IND_01, "MENOLEH KE KIRI"
-    if primary.yaw > (baseline_yaw + config.tol_yaw):
-        return IndicationCode.IND_01, "MENOLEH KE KANAN"
-    if primary.pitch > (baseline_pitch + config.tol_pitch):
-        return IndicationCode.IND_02, "MENUNDUK (LIHAT BAWAH)"
-    if primary.pitch < (baseline_pitch - config.tol_pitch):
-        return IndicationCode.IND_02, "MENDONGAK (LIHAT ATAS)"
+    por_x, por_y = compute_point_of_regard(
+        yaw=primary.yaw,
+        pitch=primary.pitch,
+        gaze_x=primary.gaze_x,
+        gaze_y=primary.gaze_y,
+        ear=primary.ear,
+        baseline_yaw=baseline_yaw,
+        baseline_pitch=baseline_pitch,
+        baseline_gaze_x=baseline_gaze_x,
+        baseline_gaze_y=baseline_gaze_y,
+        config=config,
+    )
 
-    # 2. Evaluasi Lirikan Bola Mata keluar Zona Layar (dengan kompensasi VOR & Blink Guard)
-    if primary.ear >= config.min_ear_for_gaze:
-        if primary.gaze_x < (baseline_gaze_x - config.tol_gaze_x):
-            return IndicationCode.IND_01, "MELIRIK MATA KE KIRI"
-        if primary.gaze_x > (baseline_gaze_x + config.tol_gaze_x):
-            return IndicationCode.IND_01, "MELIRIK MATA KE KANAN"
+    yaw_delta = primary.yaw - baseline_yaw
+    pitch_delta = primary.pitch - baseline_pitch
 
-        compensated_gaze_y = primary.gaze_y + config.vor_pitch_compensation * (
-            primary.pitch - baseline_pitch
+    if por_x < bounds.min_por_x:
+        label = (
+            "MENOLEH KE KIRI"
+            if yaw_delta <= -config.head_label_yaw_delta
+            else "MELIRIK MATA KE KIRI"
         )
-        if compensated_gaze_y < (baseline_gaze_y - config.tol_gaze_up):
-            return IndicationCode.IND_02, "MELIRIK MATA KE ATAS"
-        if compensated_gaze_y > (baseline_gaze_y + config.tol_gaze_down):
-            return IndicationCode.IND_02, "MELIRIK MATA KE BAWAH"
+        return IndicationCode.IND_01, label
+
+    if por_x > bounds.max_por_x:
+        label = (
+            "MENOLEH KE KANAN"
+            if yaw_delta >= config.head_label_yaw_delta
+            else "MELIRIK MATA KE KANAN"
+        )
+        return IndicationCode.IND_01, label
+
+    if por_y < bounds.min_por_y:
+        label = (
+            "MENDONGAK (LIHAT ATAS)"
+            if pitch_delta <= -config.head_label_pitch_delta
+            else "MELIRIK MATA KE ATAS"
+        )
+        return IndicationCode.IND_02, label
+
+    if por_y > bounds.max_por_y:
+        label = (
+            "MENUNDUK (LEWAT TOUCHPAD)"
+            if pitch_delta >= config.head_label_pitch_delta
+            else "MELIRIK BAWAH (LEWAT TOUCHPAD)"
+        )
+        return IndicationCode.IND_02, label
 
     return IndicationCode.NORMAL, "PESERTA FOKUS UJIAN"
 
@@ -380,7 +515,7 @@ def step_temporal_monitor(
         state.clear_active_behavior()
         return TemporalStepResult(
             banner_state=BannerState.UNCALIBRATED,
-            banner_text="TEKAN [SPASI] ATAU [C] LALU TATAP TENGAH LAYAR",
+            banner_text="TEKAN [SPASI] ATAU [C] UNTUK KALIBRASI 5 TITIK LAPTOP",
             effective_code=IndicationCode.NORMAL,
             effective_label="BELUM KALIBRASI",
             elapsed_sec=0.0,

@@ -1,4 +1,4 @@
-"""Rendering antarmuka visual OpenCV Dashboard (920x480), target kalibrasi, dan Panel Grid 2x2 PCD."""
+"""Rendering antarmuka visual OpenCV Dashboard (920x480), panduan 5 titik kalibrasi, & Grid 2x2 PCD."""
 
 from collections.abc import Sequence
 
@@ -6,7 +6,13 @@ import cv2
 import numpy as np
 from numpy.typing import NDArray
 
-from src.config import BannerState, IntegrityLevel, MonitoringState, resolve_integrity_level
+from src.config import (
+    BannerState,
+    CalibrationStage,
+    IntegrityLevel,
+    MonitoringState,
+    resolve_integrity_level,
+)
 from src.detector import DetectedFace, TemporalStepResult
 from src.pcd_pipeline import FramePreprocessResult, ROIPCDResult
 
@@ -54,27 +60,80 @@ def render_dashboard(
 
     _draw_face_overlays(dashboard, faces)
     if step_result.banner_state == BannerState.CALIBRATING:
-        _draw_calibration_target(dashboard)
+        _draw_five_point_guide(dashboard, state.current_calibration_stage)
     _draw_camera_banner_and_footer(dashboard, faces, state, step_result)
     _draw_pcd_side_panel(dashboard, len(faces), state, frame_pcd, roi_pcd, min_luminance)
 
     return dashboard
 
 
-def _draw_calibration_target(dashboard: UInt8Image) -> None:
-    """Menggambar titik bidik tengah layar selama 2 detik kalibrasi agar tatapan mata terpusat."""
+def _draw_five_point_guide(dashboard: UInt8Image, stage: CalibrationStage | None) -> None:
+    """Menggambar penanda visual arah pandang fisik selama proses kalibrasi 5 titik."""
     cx, cy = CAMERA_PANEL_WIDTH // 2, DASHBOARD_HEIGHT // 2
-    cv2.circle(dashboard, (cx, cy), 18, (0, 255, 255), 2)
-    cv2.circle(dashboard, (cx, cy), 4, (0, 0, 255), -1)
-    cv2.putText(
-        dashboard,
-        "TATAP TITIK INI",
-        (cx - 62, cy - 26),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.50,
-        (0, 255, 255),
-        2,
-    )
+    guide_color = (0, 255, 255)
+
+    if stage == CalibrationStage.CENTER or stage is None:
+        cv2.circle(dashboard, (cx, cy), 20, guide_color, 2)
+        cv2.circle(dashboard, (cx, cy), 5, (0, 0, 255), -1)
+        return
+
+    if stage == CalibrationStage.LEFT:
+        cv2.arrowedLine(dashboard, (140, cy), (20, cy), guide_color, 4, tipLength=0.35)
+        cv2.putText(
+            dashboard,
+            "LIHAT BINGKAI KIRI FISIK LAYAR",
+            (25, cy - 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            guide_color,
+            2,
+        )
+        return
+
+    if stage == CalibrationStage.RIGHT:
+        cv2.arrowedLine(
+            dashboard,
+            (CAMERA_PANEL_WIDTH - 140, cy),
+            (CAMERA_PANEL_WIDTH - 20, cy),
+            guide_color,
+            4,
+            tipLength=0.35,
+        )
+        cv2.putText(
+            dashboard,
+            "LIHAT BINGKAI KANAN FISIK LAYAR",
+            (CAMERA_PANEL_WIDTH - 335, cy - 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            guide_color,
+            2,
+        )
+        return
+
+    if stage == CalibrationStage.TOP:
+        cv2.arrowedLine(dashboard, (cx, 145), (cx, 50), guide_color, 4, tipLength=0.35)
+        cv2.putText(
+            dashboard,
+            "LIHAT BEZEL ATAS / LENSA KAMERA",
+            (cx - 160, 175),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            guide_color,
+            2,
+        )
+        return
+
+    if stage == CalibrationStage.TOUCHPAD:
+        cv2.arrowedLine(dashboard, (cx, 330), (cx, 435), guide_color, 4, tipLength=0.35)
+        cv2.putText(
+            dashboard,
+            "LIHAT TITIK AKHIR TOUCHPAD (TUNGGU BEEP)",
+            (cx - 205, 312),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.54,
+            guide_color,
+            2,
+        )
 
 
 def _draw_face_overlays(dashboard: UInt8Image, faces: Sequence[DetectedFace]) -> None:
@@ -112,17 +171,18 @@ def _draw_camera_banner_and_footer(
         step_result.banner_text,
         (12, 27),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.49,
+        0.48,
         (255, 255, 255),
         2,
     )
 
     cv2.rectangle(dashboard, (0, 450), (CAMERA_PANEL_WIDTH, 480), (20, 20, 20), -1)
     if state.is_calibrating:
-        cal_text = "MENGAMBIL SAMPEL LAYAR..."
+        stage_num = (state.calibration_stage_idx or 0) + 1
+        cal_text = f"KALIBRASI TAHAP {stage_num}/5..."
         cal_color = (255, 180, 255)
     elif state.is_calibrated:
-        cal_text = "TERKALIBRASI [SPASI/C Ulang]"
+        cal_text = "5-TITIK AKTIF [SPASI/C Ulang]"
         cal_color = (100, 255, 100)
     else:
         cal_text = "BELUM KALIBRASI [SPASI/C]"

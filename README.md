@@ -56,8 +56,13 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
    ```
    *(Pada eksekusi pertama, model resmi `models/face_landmarker.task` diunduh otomatis).*
 
-3. **Kontrol Tombol saat Aplikasi Berjalan:**
-   - **`SPASI` atau `C`** : Memulai **Kalibrasi Hitung Mundur 2.0 Detik** (tatap lingkaran `TATAP TITIK INI` di tengah layar sampai warna berubah hijau).
+3. **Kontrol Tombol & Kalibrasi 5 Titik saat Aplikasi Berjalan:**
+   - **`SPASI` atau `C`** : Memulai **Kalibrasi 5 Titik Fisik Laptop (~10 detik)** disertai panduan panah & bunyi *beep* tiap berganti tahap:
+     1. `1/5` Tatap **Tengah Layar Fisik Laptop**
+     2. `2/5` Tatap **Bingkai Tepi Kiri Layar**
+     3. `3/5` Tatap **Bingkai Tepi Kanan Layar**
+     4. `4/5` Tatap **Bezel Atas Layar / Lensa Webcam**
+     5. `5/5` Tatap **Titik Akhir Bawah Touchpad** (tunggu bunyi *double-beep* tanda selesai)
    - **`R`** : Reset *Trust Score* kembali ke `100%` dan nolkan penghitung indikasi.
    - **`Q`** : Keluar dan tutup kamera dengan aman.
 

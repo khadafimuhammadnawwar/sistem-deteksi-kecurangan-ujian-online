@@ -1,6 +1,8 @@
 """Entry point utama akuisisi webcam & koordinasi loop pemantauan ujian online (Mode 1: Teori)."""
 
+import threading
 import time
+import winsound
 
 import cv2
 import numpy as np
@@ -10,7 +12,7 @@ from src.config import DetectorConfig, MonitoringState
 from src.detector import (
     DetectedFace,
     FaceMeshDetector,
-    advance_calibration_countdown,
+    advance_five_point_calibration,
     evaluate_instant_indication,
     smooth_primary_face_pose,
     step_temporal_monitor,
@@ -21,6 +23,24 @@ from src.ui_dashboard import CAMERA_PANEL_WIDTH, render_dashboard
 
 UInt8Image = NDArray[np.uint8]
 WINDOW_TITLE: str = "Sistem Deteksi Indikasi Kecurangan Ujian Online - PCD (Mode 1: Teori)"
+
+
+def _play_calibration_cue(event: str | None) -> None:
+    """Memainkan bunyi bip singkat non-blocking agar transisi tahap 1-5 terdengar jelas."""
+    if event is None:
+        return
+
+    def _sound_worker() -> None:
+        try:
+            if event == "NEXT_STAGE":
+                winsound.Beep(880, 90)
+            elif event == "COMPLETED":
+                winsound.Beep(1180, 110)
+                winsound.Beep(1480, 160)
+        except RuntimeError:
+            pass
+
+    threading.Thread(target=_sound_worker, daemon=True).start()
 
 
 def _extract_primary_roi(
@@ -55,7 +75,10 @@ def run_monitoring_session(camera_index: int = 0) -> None:
         )
 
     print("=== SISTEM MONITORING UJIAN ONLINE (MODE 1: CBT PAPERLESS / TEORI) ===")
-    print("Kontrol: [SPASI / C] Kalibrasi 2 Detik | [R] Reset Skor & Timer | [Q] Keluar")
+    print(
+        "Kontrol: [SPASI / C] Kalibrasi 5 Titik Fisik Laptop | "
+        "[R] Reset Skor & Timer | [Q] Keluar"
+    )
 
     try:
         with FaceMeshDetector(config) as detector:
@@ -82,10 +105,10 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                 raw_faces = detector.detect_faces(frame_pcd.enhanced_bgr, timestamp_ms)
                 faces = smooth_primary_face_pose(raw_faces, state, config.ema_alpha)
 
-                # Cek apakah sedang berada dalam hitung mundur kalibrasi 2.0 detik
-                cal_step = advance_calibration_countdown(state, faces, now_mono, config)
+                cal_step = advance_five_point_calibration(state, raw_faces, now_mono, config)
                 if cal_step is not None:
                     step_result = cal_step
+                    _play_calibration_cue(cal_step.calibration_event)
                 else:
                     instant_code, instant_label = evaluate_instant_indication(
                         mean_luminance=frame_pcd.mean_luminance,
@@ -96,6 +119,7 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                         config=config,
                         baseline_gaze_x=state.baseline_gaze_x,
                         baseline_gaze_y=state.baseline_gaze_y,
+                        safe_bounds=state.safe_bounds,
                     )
                     step_result = step_temporal_monitor(
                         state=state,
@@ -135,17 +159,19 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                 if key == ord("q"):
                     break
                 if key in (ord("c"), ord(" ")):
-                    if len(faces) == 1:
-                        state.start_calibration_countdown(
-                            now_mono, config.calibration_countdown_sec
+                    if len(raw_faces) == 1:
+                        state.start_five_point_calibration(
+                            now_mono, config.calibration_stage_sec
                         )
+                        _play_calibration_cue("NEXT_STAGE")
                         print(
-                            "[KALIBRASI DIMULAI] Tatap titik tengah layar selama 2.0 detik..."
+                            "[KALIBRASI 5 TITIK DIMULAI] "
+                            "Ikuti 5 panduan arah: Tengah -> Kiri -> Kanan -> Atas -> Akhir Touchpad."
                         )
                     else:
                         print(
                             f"[KALIBRASI GAGAL] Harus tepat 1 wajah di kamera "
-                            f"(terdeteksi: {len(faces)})."
+                            f"(terdeteksi: {len(raw_faces)})."
                         )
                 elif key == ord("r"):
                     state.reset_session()
