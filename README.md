@@ -24,10 +24,8 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
 
 ## Struktur Direktori
 ```text
-├── AGENTS.md                  # Direktif arsitektur & kontrak aturan proyek
-├── CLAUDE.md                  # Panduan konteks cepat & hierarki kebenaran AI Agent
-├── ARCHITECTURE.md            # Desain sistem berlapis, state machine, & kompensasi VOR
-├── ARCHITECTURE-ESSENTIALS.md # Ringkasan cepat invariants & tabel ambang batas kunci
+├── AGENTS.md                  # Direktif arsitektur & kontrak aturan proyek (Antigravity IDE)
+├── ARCHITECTURE.md            # Desain berlapis, core invariants, state machine, & kompensasi VOR
 ├── PRD.md                     # Spesifikasi produk, rumus matematis PCD, & matriks aturan
 ├── README.md                  # Panduan penggunaan & protokol pengujian akurasi
 ├── requirements.txt           # Daftar dependensi Python
