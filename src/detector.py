@@ -1,0 +1,317 @@
+"""Detektor MediaPipe Tasks FaceLandmarker, kalkulasi geometri Yaw/Pitch, dan logika temporal."""
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from types import TracebackType
+from typing import Protocol, Self
+import urllib.error
+import urllib.request
+
+import cv2
+import mediapipe as mp
+from mediapipe.tasks.python import BaseOptions, vision
+import numpy as np
+from numpy.typing import NDArray
+
+from src.config import BannerState, DetectorConfig, IndicationCode, MonitoringState
+
+UInt8Image = NDArray[np.uint8]
+
+# Indeks kanonik 478 titik landmark MediaPipe FaceLandmarker
+NOSE_TIP_IDX: int = 1
+LEFT_CHEEK_IDX: int = 234
+RIGHT_CHEEK_IDX: int = 454
+LEFT_EYE_OUTER_IDX: int = 33
+RIGHT_EYE_OUTER_IDX: int = 263
+CHIN_IDX: int = 152
+BBOX_PADDING_PX: int = 15
+
+
+class LandmarkPoint(Protocol):
+    """Kontrak koordinat ternormalisasi landmark wajah (0.0 - 1.0)."""
+
+    @property
+    def x(self) -> float: ...
+
+    @property
+    def y(self) -> float: ...
+
+
+@dataclass(frozen=True)
+class DetectedFace:
+    """Data geometri dan bounding box satu wajah yang terdeteksi dalam frame."""
+
+    bbox: tuple[int, int, int, int]  # (x_min, y_min, x_max, y_max)
+    nose_px: tuple[int, int]
+    area: int
+    yaw: float
+    pitch: float
+
+
+@dataclass(frozen=True)
+class TemporalStepResult:
+    """Keputusan evaluasi temporal untuk satu siklus frame."""
+
+    banner_state: BannerState
+    banner_text: str
+    effective_code: IndicationCode
+    effective_label: str
+    elapsed_sec: float
+    should_log_evidence: bool
+
+
+def ensure_landmarker_model(model_path: Path, model_url: str) -> Path:
+    """Memastikan file model face_landmarker.task tersedia; unduh otomatis jika belum ada."""
+    if model_path.exists() and model_path.stat().st_size > 100_000:
+        return model_path
+
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = model_path.with_suffix(".task.tmp")
+    print(f"[INFO] Mengunduh model MediaPipe FaceLandmarker ke '{model_path}'...")
+    try:
+        with urllib.request.urlopen(model_url, timeout=30) as response:
+            data = response.read()
+        if len(data) < 100_000:
+            raise OSError("Ukuran file model yang diunduh tidak valid (terlalu kecil).")
+        temp_path.write_bytes(data)
+        temp_path.replace(model_path)
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Gagal mengunduh model FaceLandmarker dari '{model_url}': {exc}"
+        ) from exc
+
+    return model_path
+
+
+def calculate_yaw_pitch(landmarks: Sequence[LandmarkPoint]) -> tuple[float, float]:
+    """
+    Menghitung rasio geometri Yaw (horizontal) dan Pitch (vertikal) sesuai rumus PRD:
+    - Ratio_yaw   = (x_nose - x_left_cheek) / max(0.001, x_right_cheek - x_left_cheek)
+    - Ratio_pitch = (y_nose - y_eye_mid) / max(0.001, y_chin - y_eye_mid)
+    """
+    nose = landmarks[NOSE_TIP_IDX]
+    left_cheek = landmarks[LEFT_CHEEK_IDX]
+    right_cheek = landmarks[RIGHT_CHEEK_IDX]
+    left_eye = landmarks[LEFT_EYE_OUTER_IDX]
+    right_eye = landmarks[RIGHT_EYE_OUTER_IDX]
+    chin = landmarks[CHIN_IDX]
+
+    face_width = max(0.001, right_cheek.x - left_cheek.x)
+    yaw_ratio = (nose.x - left_cheek.x) / face_width
+
+    eye_mid_y = (left_eye.y + right_eye.y) / 2.0
+    face_height = max(0.001, chin.y - eye_mid_y)
+    pitch_ratio = (nose.y - eye_mid_y) / face_height
+
+    return float(yaw_ratio), float(pitch_ratio)
+
+
+def extract_faces_sorted_by_area(
+    multi_face_landmarks: Sequence[Sequence[LandmarkPoint]],
+    frame_width: int,
+    frame_height: int,
+) -> list[DetectedFace]:
+    """Mengekstrak geometri seluruh wajah dan mengurutkannya dari luas terbesar (peserta utama)."""
+    detected_faces: list[DetectedFace] = []
+    for landmarks in multi_face_landmarks:
+        xs = [int(lm.x * frame_width) for lm in landmarks]
+        ys = [int(lm.y * frame_height) for lm in landmarks]
+
+        x_min = max(0, min(xs) - BBOX_PADDING_PX)
+        x_max = min(frame_width, max(xs) + BBOX_PADDING_PX)
+        y_min = max(0, min(ys) - BBOX_PADDING_PX)
+        y_max = min(frame_height, max(ys) + BBOX_PADDING_PX)
+
+        area = max(0, x_max - x_min) * max(0, y_max - y_min)
+        nose = landmarks[NOSE_TIP_IDX]
+        nose_px = (
+            min(max(0, int(nose.x * frame_width)), frame_width - 1),
+            min(max(0, int(nose.y * frame_height)), frame_height - 1),
+        )
+        yaw, pitch = calculate_yaw_pitch(landmarks)
+
+        detected_faces.append(
+            DetectedFace(
+                bbox=(x_min, y_min, x_max, y_max),
+                nose_px=nose_px,
+                area=area,
+                yaw=yaw,
+                pitch=pitch,
+            )
+        )
+
+    detected_faces.sort(key=lambda face: face.area, reverse=True)
+    return detected_faces
+
+
+def evaluate_instant_indication(
+    mean_luminance: float,
+    global_edge_density: float,
+    faces: Sequence[DetectedFace],
+    baseline_yaw: float,
+    baseline_pitch: float,
+    config: DetectorConfig,
+) -> tuple[IndicationCode, str]:
+    """
+    Mengevaluasi indikasi instan satu frame sesuai hierarki prioritas PRD:
+    IND-05 > IND-03 > IND-04 > IND-01 > IND-02 > NORMAL.
+    """
+    if mean_luminance < config.min_luminance:
+        return IndicationCode.IND_05, "KAMERA TERTUTUP / RUANGAN GELAP"
+
+    if len(faces) == 0 and global_edge_density < config.min_global_edge_density:
+        return IndicationCode.IND_05, "KAMERA TERTUTUP / OKLUSI POLOS"
+
+    if len(faces) > 1:
+        return IndicationCode.IND_03, "TERDETEKSI >1 ORANG DI KAMERA"
+
+    if len(faces) == 0:
+        return IndicationCode.IND_04, "WAJAH TIDAK TERDETEKSI"
+
+    primary = faces[0]
+    if primary.yaw < (baseline_yaw - config.tol_yaw):
+        return IndicationCode.IND_01, "MENOLEH KE KIRI"
+    if primary.yaw > (baseline_yaw + config.tol_yaw):
+        return IndicationCode.IND_01, "MENOLEH KE KANAN"
+    if primary.pitch > (baseline_pitch + config.tol_pitch):
+        return IndicationCode.IND_02, "MENUNDUK (LIHAT BAWAH)"
+    if primary.pitch < (baseline_pitch - config.tol_pitch):
+        return IndicationCode.IND_02, "MENDONGAK (LIHAT ATAS)"
+
+    return IndicationCode.NORMAL, "PESERTA FOKUS UJIAN"
+
+
+def step_temporal_monitor(
+    state: MonitoringState,
+    instant_code: IndicationCode,
+    instant_label: str,
+    now_monotonic: float,
+    config: DetectorConfig,
+) -> TemporalStepResult:
+    """
+    Memperbarui state analisis durasi temporal dengan Calibration Gate,
+    Grace Period anti-flicker (0.3s), dan Cooldown penyimpanan bukti (5.0s).
+    """
+    if not state.is_calibrated:
+        state.clear_active_behavior()
+        return TemporalStepResult(
+            banner_state=BannerState.UNCALIBRATED,
+            banner_text="MENUNGGU KALIBRASI WAJAH: TEKAN [C] SAAT FOKUS",
+            effective_code=IndicationCode.NORMAL,
+            effective_label="BELUM KALIBRASI",
+            elapsed_sec=0.0,
+            should_log_evidence=False,
+        )
+
+    if instant_code == IndicationCode.NORMAL:
+        if state.active_code != IndicationCode.NORMAL and state.behavior_start_time is not None:
+            if state.normal_since_time is None:
+                state.normal_since_time = now_monotonic
+            if (now_monotonic - state.normal_since_time) >= config.grace_period_sec:
+                state.clear_active_behavior()
+        else:
+            state.clear_active_behavior()
+
+        return TemporalStepResult(
+            banner_state=BannerState.SAFE,
+            banner_text="STATUS AMAN: PESERTA FOKUS UJIAN",
+            effective_code=IndicationCode.NORMAL,
+            effective_label="PESERTA FOKUS UJIAN",
+            elapsed_sec=0.0,
+            should_log_evidence=False,
+        )
+
+    # Perilaku mencurigakan terdeteksi pada frame saat ini
+    state.normal_since_time = None
+    if state.active_code != instant_code or state.behavior_start_time is None:
+        state.active_code = instant_code
+        state.active_label = instant_label
+        state.behavior_start_time = now_monotonic
+    else:
+        state.active_label = instant_label
+
+    elapsed_sec = max(0.0, now_monotonic - state.behavior_start_time)
+    limit_sec = config.threshold_for(state.active_code)
+
+    if elapsed_sec < limit_sec:
+        return TemporalStepResult(
+            banner_state=BannerState.WARNING,
+            banner_text=(
+                f"MEMANTAU: {state.active_label} ({elapsed_sec:.1f}s / {limit_sec:.1f}s)"
+            ),
+            effective_code=state.active_code,
+            effective_label=state.active_label,
+            elapsed_sec=elapsed_sec,
+            should_log_evidence=False,
+        )
+
+    cooldown_ready = (
+        state.last_logged_time is None
+        or (now_monotonic - state.last_logged_time) >= config.log_cooldown_sec
+    )
+    should_log = False
+    if cooldown_ready:
+        state.trust_score = max(0.0, state.trust_score - config.score_penalty)
+        state.total_flags += 1
+        state.last_logged_time = now_monotonic
+        should_log = True
+
+    return TemporalStepResult(
+        banner_state=BannerState.ALERT,
+        banner_text=(
+            f"INDIKASI [{state.active_code.value}]: {state.active_label} ({elapsed_sec:.1f}s)"
+        ),
+        effective_code=state.active_code,
+        effective_label=state.active_label,
+        elapsed_sec=elapsed_sec,
+        should_log_evidence=should_log,
+    )
+
+
+class FaceMeshDetector:
+    """Wrapper MediaPipe Tasks FaceLandmarker (RunningMode.VIDEO) dengan context manager."""
+
+    def __init__(self, config: DetectorConfig) -> None:
+        self._config = config
+        self._last_timestamp_ms: int = -1
+        model_file = ensure_landmarker_model(config.model_path, config.model_url)
+        options = vision.FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(model_file)),
+            running_mode=vision.RunningMode.VIDEO,
+            num_faces=config.max_num_faces,
+            min_face_detection_confidence=config.min_detection_confidence,
+            min_face_presence_confidence=config.min_presence_confidence,
+            min_tracking_confidence=config.min_tracking_confidence,
+        )
+        self._landmarker = vision.FaceLandmarker.create_from_options(options)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def detect_faces(self, enhanced_bgr: UInt8Image, timestamp_ms: int) -> list[DetectedFace]:
+        """Mendeteksi dan mengurutkan wajah dari frame BGR hasil peningkatan kontras CLAHE."""
+        if timestamp_ms <= self._last_timestamp_ms:
+            timestamp_ms = self._last_timestamp_ms + 1
+        self._last_timestamp_ms = timestamp_ms
+
+        rgb_frame = np.ascontiguousarray(cv2.cvtColor(enhanced_bgr, cv2.COLOR_BGR2RGB))
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+        result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
+
+        height, width, _ = enhanced_bgr.shape
+        return extract_faces_sorted_by_area(result.face_landmarks, width, height)
+
+    def close(self) -> None:
+        """Menutup resource native MediaPipe FaceLandmarker."""
+        self._landmarker.close()

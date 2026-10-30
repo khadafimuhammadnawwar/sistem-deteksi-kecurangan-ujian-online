@@ -1,0 +1,18 @@
+# Virtual Environment & Python Cache
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Output Runtime Sistem Ujian (Bukti, Log & Model Biner)
+bukti_indikasi/
+log_indikasi_ujian.csv
+models/*.task
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
