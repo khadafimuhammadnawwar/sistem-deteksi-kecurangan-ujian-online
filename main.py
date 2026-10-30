@@ -10,6 +10,7 @@ from src.config import DetectorConfig, MonitoringState
 from src.detector import (
     DetectedFace,
     FaceMeshDetector,
+    advance_calibration_countdown,
     evaluate_instant_indication,
     smooth_primary_face_pose,
     step_temporal_monitor,
@@ -54,7 +55,7 @@ def run_monitoring_session(camera_index: int = 0) -> None:
         )
 
     print("=== SISTEM MONITORING UJIAN ONLINE (MODE 1: CBT PAPERLESS / TEORI) ===")
-    print("Kontrol: [C] Kalibrasi Kepala & Mata | [R] Reset Skor & Timer | [Q] Keluar")
+    print("Kontrol: [SPASI / C] Kalibrasi 2 Detik | [R] Reset Skor & Timer | [Q] Keluar")
 
     try:
         with FaceMeshDetector(config) as detector:
@@ -73,42 +74,40 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                         (config.frame_width, config.frame_height),
                     )
 
-                # 1. Akuisisi & Pencerminan Horizontal
                 mirrored_frame = cv2.flip(raw_frame, 1)
-
-                # 2. Pra-pemrosesan PCD Global (Luminansi, Canny Global, CIE-LAB CLAHE)
                 frame_pcd = preprocess_frame_lab_clahe(mirrored_frame, clahe, config)
 
-                # 3. Deteksi Landmark Wajah & Iris + EMA Signal Smoothing
                 now_mono = time.monotonic()
                 timestamp_ms = int(now_mono * 1000)
                 raw_faces = detector.detect_faces(frame_pcd.enhanced_bgr, timestamp_ms)
                 faces = smooth_primary_face_pose(raw_faces, state, config.ema_alpha)
 
-                # 4. Evaluasi Aturan Geometri Kepala, Iris Mata, & Durasi Temporal
-                instant_code, instant_label = evaluate_instant_indication(
-                    mean_luminance=frame_pcd.mean_luminance,
-                    global_edge_density=frame_pcd.global_edge_density,
-                    faces=faces,
-                    baseline_yaw=state.baseline_yaw,
-                    baseline_pitch=state.baseline_pitch,
-                    config=config,
-                    baseline_gaze_x=state.baseline_gaze_x,
-                    baseline_gaze_y=state.baseline_gaze_y,
-                )
-                step_result = step_temporal_monitor(
-                    state=state,
-                    instant_code=instant_code,
-                    instant_label=instant_label,
-                    now_monotonic=now_mono,
-                    config=config,
-                )
+                # Cek apakah sedang berada dalam hitung mundur kalibrasi 2.0 detik
+                cal_step = advance_calibration_countdown(state, faces, now_mono, config)
+                if cal_step is not None:
+                    step_result = cal_step
+                else:
+                    instant_code, instant_label = evaluate_instant_indication(
+                        mean_luminance=frame_pcd.mean_luminance,
+                        global_edge_density=frame_pcd.global_edge_density,
+                        faces=faces,
+                        baseline_yaw=state.baseline_yaw,
+                        baseline_pitch=state.baseline_pitch,
+                        config=config,
+                        baseline_gaze_x=state.baseline_gaze_x,
+                        baseline_gaze_y=state.baseline_gaze_y,
+                    )
+                    step_result = step_temporal_monitor(
+                        state=state,
+                        instant_code=instant_code,
+                        instant_label=instant_label,
+                        now_monotonic=now_mono,
+                        config=config,
+                    )
 
-                # 5. Pemrosesan Panel PCD 2x2 pada ROI Wajah Utama
                 primary_roi = _extract_primary_roi(frame_pcd.enhanced_bgr, faces)
                 roi_pcd = process_roi_pcd_panel(primary_roi, clahe, config)
 
-                # 6. Render Dashboard Visual (920x480)
                 dashboard = render_dashboard(
                     raw_frame_bgr=mirrored_frame,
                     faces=faces,
@@ -119,7 +118,6 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                     min_luminance=config.min_luminance,
                 )
 
-                # 7. Simpan Bukti Ber-anotasi & Log CSV jika Melewati Ambang Durasi
                 if step_result.should_log_evidence:
                     logger.record_indication(
                         annotated_frame=dashboard[:, :CAMERA_PANEL_WIDTH],
@@ -136,14 +134,13 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     break
-                if key == ord("c"):
+                if key in (ord("c"), ord(" ")):
                     if len(faces) == 1:
-                        p = faces[0]
-                        state.calibrate(p.yaw, p.pitch, p.gaze_x, p.gaze_y)
+                        state.start_calibration_countdown(
+                            now_mono, config.calibration_countdown_sec
+                        )
                         print(
-                            f"[KALIBRASI BERHASIL] Yaw:{state.baseline_yaw:.3f} "
-                            f"Pitch:{state.baseline_pitch:.3f} | "
-                            f"EyeX:{state.baseline_gaze_x:.3f} EyeY:{state.baseline_gaze_y:+.3f}"
+                            "[KALIBRASI DIMULAI] Tatap titik tengah layar selama 2.0 detik..."
                         )
                     else:
                         print(

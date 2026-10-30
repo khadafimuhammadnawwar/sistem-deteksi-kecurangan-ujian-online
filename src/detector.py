@@ -1,4 +1,4 @@
-"""Detektor MediaPipe Tasks FaceLandmarker, kalkulasi geometri kepala & iris mata, serta logika temporal."""
+"""Detektor MediaPipe Tasks FaceLandmarker, kalkulasi geometri kepala & iris VOR, serta logika temporal."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -38,7 +38,6 @@ L_EYE_TOP_IDX: int = 386
 L_EYE_BOTTOM_IDX: int = 374
 L_IRIS_CENTER_IDX: int = 473
 
-# Alias kompatibilitas pengujian geometri kepala
 LEFT_EYE_OUTER_IDX: int = R_EYE_OUTER_IDX
 RIGHT_EYE_OUTER_IDX: int = L_EYE_OUTER_IDX
 
@@ -66,7 +65,7 @@ class DetectedFace:
     yaw: float
     pitch: float
     gaze_x: float = 0.50
-    gaze_y: float = 0.00
+    gaze_y: float = -0.11
     ear: float = 0.30
 
 
@@ -131,12 +130,12 @@ def calculate_iris_gaze_and_ear(
 ) -> tuple[float, float, float]:
     """
     Menghitung rasio posisi pupil/iris mata (Gaze X, Gaze Y) dan Eye Aspect Ratio (EAR):
-    - Gaze X: posisi horizontal pupil di antara sudut mata kiri-kanan (0.50 = tengah).
-    - Gaze Y: posisi vertikal pupil relatif garis tengah sudut mata dibagi lebar mata (stabil saat berkedip).
+    - Gaze X: posisi horizontal pupil di antara sudut mata kiri-kanan (0.50 = tengah layar).
+    - Gaze Y: posisi vertikal pupil relatif garis sudut mata dibagi lebar mata.
     - EAR   : rasio bukaan kelopak vertikal terhadap lebar mata untuk memfilter kedipan alami.
     """
     if len(landmarks) <= L_IRIS_CENTER_IDX:
-        return 0.50, 0.00, 0.30
+        return 0.50, -0.11, 0.30
 
     r_width = max(0.001, landmarks[R_EYE_INNER_IDX].x - landmarks[R_EYE_OUTER_IDX].x)
     l_width = max(0.001, landmarks[L_EYE_OUTER_IDX].x - landmarks[L_EYE_INNER_IDX].x)
@@ -245,6 +244,71 @@ def smooth_primary_face_pose(
     return [smoothed_primary, *faces[1:]]
 
 
+def advance_calibration_countdown(
+    state: MonitoringState,
+    faces: Sequence[DetectedFace],
+    now_monotonic: float,
+    config: DetectorConfig,
+) -> TemporalStepResult | None:
+    """
+    Memproses fase hitung mundur kalibrasi agar peserta sempat mengangkat mata dari keyboard
+    ke tengah layar, lalu mengambil rata-rata sampel stabil pada 0.8 detik terakhir.
+    """
+    if state.calibration_deadline is None:
+        return None
+
+    if len(faces) != 1:
+        state.cancel_calibration_countdown()
+        return TemporalStepResult(
+            banner_state=BannerState.UNCALIBRATED,
+            banner_text="KALIBRASI BATAL: PASTIKAN TEPAT 1 WAJAH DI LAYAR",
+            effective_code=IndicationCode.NORMAL,
+            effective_label="KALIBRASI BATAL",
+            elapsed_sec=0.0,
+            should_log_evidence=False,
+        )
+
+    remaining = state.calibration_deadline - now_monotonic
+    primary = faces[0]
+    if remaining <= config.calibration_sample_window_sec:
+        state.calibration_samples.append(
+            (primary.yaw, primary.pitch, primary.gaze_x, primary.gaze_y)
+        )
+
+    if remaining > 0.0:
+        return TemporalStepResult(
+            banner_state=BannerState.CALIBRATING,
+            banner_text=f"KALIBRASI DALAM {remaining:.1f}s: TATAP TITIK TENGAH LAYAR!",
+            effective_code=IndicationCode.NORMAL,
+            effective_label="PROSES KALIBRASI",
+            elapsed_sec=0.0,
+            should_log_evidence=False,
+        )
+
+    samples = state.calibration_samples or [
+        (primary.yaw, primary.pitch, primary.gaze_x, primary.gaze_y)
+    ]
+    n_samples = len(samples)
+    avg_yaw = sum(s[0] for s in samples) / n_samples
+    avg_pitch = sum(s[1] for s in samples) / n_samples
+    avg_gx = sum(s[2] for s in samples) / n_samples
+    avg_gy = sum(s[3] for s in samples) / n_samples
+    state.calibrate(avg_yaw, avg_pitch, avg_gx, avg_gy)
+    print(
+        f"[KALIBRASI SELESAI ({n_samples} sampel)] "
+        f"Yaw:{avg_yaw:.3f} Pitch:{avg_pitch:.3f} | EyeX:{avg_gx:.3f} EyeY:{avg_gy:+.3f}"
+    )
+
+    return TemporalStepResult(
+        banner_state=BannerState.SAFE,
+        banner_text="KALIBRASI BERHASIL: ZONA LAYAR AKTIF",
+        effective_code=IndicationCode.NORMAL,
+        effective_label="PESERTA FOKUS UJIAN",
+        elapsed_sec=0.0,
+        should_log_evidence=False,
+    )
+
+
 def evaluate_instant_indication(
     mean_luminance: float,
     global_edge_density: float,
@@ -253,11 +317,11 @@ def evaluate_instant_indication(
     baseline_pitch: float,
     config: DetectorConfig,
     baseline_gaze_x: float = 0.50,
-    baseline_gaze_y: float = 0.00,
+    baseline_gaze_y: float = -0.11,
 ) -> tuple[IndicationCode, str]:
     """
-    Mengevaluasi indikasi instan satu frame sesuai hierarki prioritas:
-    IND-05 > IND-03 > IND-04 > IND-01 (Kepala) > IND-02 (Kepala) > IND-01/02 (Lirikan Mata) > NORMAL.
+    Mengevaluasi indikasi instan satu frame sesuai hierarki prioritas dengan
+    Screen Safe-Zone & kompensasi Vestibulo-Ocular Reflex (VOR) pada sumbu vertikal mata.
     """
     if mean_luminance < config.min_luminance:
         return IndicationCode.IND_05, "KAMERA TERTUTUP / RUANGAN GELAP"
@@ -283,15 +347,19 @@ def evaluate_instant_indication(
     if primary.pitch < (baseline_pitch - config.tol_pitch):
         return IndicationCode.IND_02, "MENDONGAK (LIHAT ATAS)"
 
-    # 2. Evaluasi Lirikan Bola Mata (Iris Gaze) saat kepala lurus & tidak sedang berkedip
+    # 2. Evaluasi Lirikan Bola Mata keluar Zona Layar (dengan kompensasi VOR & Blink Guard)
     if primary.ear >= config.min_ear_for_gaze:
         if primary.gaze_x < (baseline_gaze_x - config.tol_gaze_x):
             return IndicationCode.IND_01, "MELIRIK MATA KE KIRI"
         if primary.gaze_x > (baseline_gaze_x + config.tol_gaze_x):
             return IndicationCode.IND_01, "MELIRIK MATA KE KANAN"
-        if primary.gaze_y < (baseline_gaze_y - config.tol_gaze_up):
+
+        compensated_gaze_y = primary.gaze_y + config.vor_pitch_compensation * (
+            primary.pitch - baseline_pitch
+        )
+        if compensated_gaze_y < (baseline_gaze_y - config.tol_gaze_up):
             return IndicationCode.IND_02, "MELIRIK MATA KE ATAS"
-        if primary.gaze_y > (baseline_gaze_y + config.tol_gaze_down):
+        if compensated_gaze_y > (baseline_gaze_y + config.tol_gaze_down):
             return IndicationCode.IND_02, "MELIRIK MATA KE BAWAH"
 
     return IndicationCode.NORMAL, "PESERTA FOKUS UJIAN"
@@ -312,7 +380,7 @@ def step_temporal_monitor(
         state.clear_active_behavior()
         return TemporalStepResult(
             banner_state=BannerState.UNCALIBRATED,
-            banner_text="MENUNGGU KALIBRASI WAJAH: TEKAN [C] SAAT FOKUS",
+            banner_text="TEKAN [SPASI] ATAU [C] LALU TATAP TENGAH LAYAR",
             effective_code=IndicationCode.NORMAL,
             effective_label="BELUM KALIBRASI",
             elapsed_sec=0.0,

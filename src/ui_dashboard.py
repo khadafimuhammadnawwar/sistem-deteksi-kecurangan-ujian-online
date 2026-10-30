@@ -1,4 +1,4 @@
-"""Rendering antarmuka visual OpenCV Dashboard (920x480), penanda iris, dan Panel Grid 2x2 PCD."""
+"""Rendering antarmuka visual OpenCV Dashboard (920x480), target kalibrasi, dan Panel Grid 2x2 PCD."""
 
 from collections.abc import Sequence
 
@@ -25,6 +25,7 @@ COLOR_BORDER: tuple[int, int, int] = (85, 85, 85)
 
 BANNER_COLORS: dict[BannerState, tuple[int, int, int]] = {
     BannerState.UNCALIBRATED: (160, 90, 0),
+    BannerState.CALIBRATING: (170, 0, 170),
     BannerState.SAFE: (0, 160, 0),
     BannerState.WARNING: (0, 150, 240),
     BannerState.ALERT: (0, 0, 220),
@@ -52,10 +53,28 @@ def render_dashboard(
     dashboard[:, CAMERA_PANEL_WIDTH:] = COLOR_PANEL_BG
 
     _draw_face_overlays(dashboard, faces)
+    if step_result.banner_state == BannerState.CALIBRATING:
+        _draw_calibration_target(dashboard)
     _draw_camera_banner_and_footer(dashboard, faces, state, step_result)
     _draw_pcd_side_panel(dashboard, len(faces), state, frame_pcd, roi_pcd, min_luminance)
 
     return dashboard
+
+
+def _draw_calibration_target(dashboard: UInt8Image) -> None:
+    """Menggambar titik bidik tengah layar selama 2 detik kalibrasi agar tatapan mata terpusat."""
+    cx, cy = CAMERA_PANEL_WIDTH // 2, DASHBOARD_HEIGHT // 2
+    cv2.circle(dashboard, (cx, cy), 18, (0, 255, 255), 2)
+    cv2.circle(dashboard, (cx, cy), 4, (0, 0, 255), -1)
+    cv2.putText(
+        dashboard,
+        "TATAP TITIK INI",
+        (cx - 62, cy - 26),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.50,
+        (0, 255, 255),
+        2,
+    )
 
 
 def _draw_face_overlays(dashboard: UInt8Image, faces: Sequence[DetectedFace]) -> None:
@@ -93,24 +112,28 @@ def _draw_camera_banner_and_footer(
         step_result.banner_text,
         (12, 27),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.50,
+        0.49,
         (255, 255, 255),
         2,
     )
 
     cv2.rectangle(dashboard, (0, 450), (CAMERA_PANEL_WIDTH, 480), (20, 20, 20), -1)
-    cal_text = (
-        "TERKALIBRASI (Mode 1)"
-        if state.is_calibrated
-        else "BELUM KALIBRASI [Tekan 'C']"
-    )
-    cal_color = (100, 255, 100) if state.is_calibrated else (0, 255, 255)
+    if state.is_calibrating:
+        cal_text = "MENGAMBIL SAMPEL LAYAR..."
+        cal_color = (255, 180, 255)
+    elif state.is_calibrated:
+        cal_text = "TERKALIBRASI [SPASI/C Ulang]"
+        cal_color = (100, 255, 100)
+    else:
+        cal_text = "BELUM KALIBRASI [SPASI/C]"
+        cal_color = (0, 255, 255)
+
     cv2.putText(
         dashboard,
         cal_text,
         (10, 470),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.44,
+        0.43,
         cal_color,
         1,
     )

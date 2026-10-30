@@ -25,6 +25,9 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
 ## Struktur Direktori
 ```text
 ├── AGENTS.md                  # Direktif arsitektur & kontrak aturan proyek
+├── CLAUDE.md                  # Panduan konteks cepat & hierarki kebenaran AI Agent
+├── ARCHITECTURE.md            # Desain sistem berlapis, state machine, & kompensasi VOR
+├── ARCHITECTURE-ESSENTIALS.md # Ringkasan cepat invariants & tabel ambang batas kunci
 ├── PRD.md                     # Spesifikasi produk, rumus matematis PCD, & matriks aturan
 ├── README.md                  # Panduan penggunaan & protokol pengujian akurasi
 ├── requirements.txt           # Daftar dependensi Python
@@ -32,7 +35,7 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
 ├── src/
 │   ├── config.py              # Enum kode indikasi, konstanta, & state EMA/kalibrasi
 │   ├── pcd_pipeline.py        # Fungsi murni LAB-CLAHE, Gaussian 5x5, Otsu, & Canny
-│   ├── detector.py            # FaceLandmarker (478 titik), geometri kepala/iris, & timer
+│   ├── detector.py            # FaceLandmarker (478 titik), geometri kepala/iris VOR, & timer
 │   ├── logger.py              # Pencatatan bukti .jpg & .csv dengan context manager
 │   └── ui_dashboard.py        # Rendering dashboard 920x480 & Grid 2x2 PCD
 └── tests/
@@ -56,7 +59,7 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
    *(Pada eksekusi pertama, model resmi `models/face_landmarker.task` diunduh otomatis).*
 
 3. **Kontrol Tombol saat Aplikasi Berjalan:**
-   - **`C`** : Kalibrasi titik tengah kepala & pandangan mata (pastikan tepat 1 wajah fokus ke tengah layar).
+   - **`SPASI` atau `C`** : Memulai **Kalibrasi Hitung Mundur 2.0 Detik** (tatap lingkaran `TATAP TITIK INI` di tengah layar sampai warna berubah hijau).
    - **`R`** : Reset *Trust Score* kembali ke `100%` dan nolkan penghitung indikasi.
    - **`Q`** : Keluar dan tutup kamera dengan aman.
 
@@ -82,3 +85,4 @@ Gunakan matriks skenario berikut saat mengambil data Bab Hasil & Pembahasan lapo
 | **UJI-07** | Peserta meninggalkan kursi (latar ruangan terlihat) | $\ge 3.0\text{ s}$ | `IND-04` (Wajah Hilang) | ... |
 | **UJI-08** | Lensa kamera ditutup telapak tangan gelap | $\ge 2.0\text{ s}$ | `IND-05` (Gelap $\mu_Y < 35$) | ... |
 | **UJI-09** | Lensa kamera ditutup kertas HVS putih / tisu terang | $\ge 2.0\text{ s}$ | `IND-05` (Oklusi Canny $< 1\%$) | ... |
+

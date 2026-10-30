@@ -1,6 +1,6 @@
 """Konfigurasi sistem, Enum kode indikasi, dan Dataclass state pemantauan ujian."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
@@ -17,8 +17,8 @@ class IndicationCode(StrEnum):
     """Kode standar indikasi perilaku ujian sesuai spesifikasi PRD & AGENTS.md."""
 
     NORMAL = "NORMAL"
-    IND_01 = "IND-01"  # Penyimpangan Horizontal (Menoleh / Melirik Mata Kiri-Kanan)
-    IND_02 = "IND-02"  # Penyimpangan Vertikal (Menunduk-Mendongak / Melirik Mata Atas-Bawah)
+    IND_01 = "IND-01"  # Penyimpangan Horizontal (Menoleh / Melirik Keluar Sisi Layar)
+    IND_02 = "IND-02"  # Penyimpangan Vertikal (Menunduk-Mendongak / Melirik Keluar Atas-Bawah)
     IND_03 = "IND-03"  # Terdeteksi >1 Orang
     IND_04 = "IND-04"  # Wajah Tidak Terdeteksi
     IND_05 = "IND-05"  # Kamera Tertutup / Gelap / Oklusi Polos
@@ -28,6 +28,7 @@ class BannerState(StrEnum):
     """Kategori visual banner status pada dashboard."""
 
     UNCALIBRATED = "UNCALIBRATED"
+    CALIBRATING = "CALIBRATING"
     SAFE = "SAFE"
     WARNING = "WARNING"
     ALERT = "ALERT"
@@ -43,7 +44,7 @@ class IntegrityLevel(StrEnum):
 
 @dataclass(frozen=True)
 class DetectorConfig:
-    """Parameter konfigurasi pengolahan citra, geometri kepala/mata, EMA, dan aturan temporal."""
+    """Parameter konfigurasi pengolahan citra, geometri kepala/mata, VOR, EMA, dan aturan temporal."""
 
     frame_width: int = 640
     frame_height: int = 480
@@ -58,23 +59,28 @@ class DetectorConfig:
     min_luminance: float = 35.0
     min_global_edge_density: float = 1.0
 
-    # Parameter Geometri Landmark Kepala, Iris Mata, & EMA Smoothing
+    # Parameter Geometri Landmark Kepala, Zona Aman Layar Iris, & Kompensasi VOR
     max_num_faces: int = 3
     min_detection_confidence: float = 0.6
     min_presence_confidence: float = 0.6
     min_tracking_confidence: float = 0.6
     ema_alpha: float = 0.35
     tol_yaw: float = 0.15
-    tol_pitch: float = 0.08
-    tol_gaze_x: float = 0.085
-    tol_gaze_up: float = 0.055
-    tol_gaze_down: float = 0.085
+    tol_pitch: float = 0.10
+    tol_gaze_x: float = 0.135
+    tol_gaze_up: float = 0.13
+    tol_gaze_down: float = 0.13
+    vor_pitch_compensation: float = 0.80
     min_ear_for_gaze: float = 0.15
+
+    # Parameter Kalibrasi Hitung Mundur (Mencegah Jebakan Melihat Keyboard)
+    calibration_countdown_sec: float = 2.0
+    calibration_sample_window_sec: float = 0.8
 
     # Parameter Temporal (Detik) & Penilaian Trust Score
     thresh_yaw_sec: float = 2.5
     thresh_pitch_sec: float = 3.0
-    thresh_gaze_sec: float = 2.0
+    thresh_gaze_sec: float = 2.5
     thresh_multiface_sec: float = 1.0
     thresh_absence_sec: float = 3.0
     thresh_dark_sec: float = 2.0
@@ -105,17 +111,19 @@ class DetectorConfig:
 
 @dataclass
 class MonitoringState:
-    """State dinamis sesi pemantauan peserta ujian termasuk sinyal terhaluskan EMA."""
+    """State dinamis sesi pemantauan peserta termasuk kalibrasi hitung mundur & sinyal EMA."""
 
     baseline_yaw: float = 0.50
-    baseline_pitch: float = 0.38
+    baseline_pitch: float = 0.35
     baseline_gaze_x: float = 0.50
-    baseline_gaze_y: float = 0.00
+    baseline_gaze_y: float = -0.11
     smoothed_yaw: float | None = None
     smoothed_pitch: float | None = None
     smoothed_gaze_x: float | None = None
     smoothed_gaze_y: float | None = None
     is_calibrated: bool = False
+    calibration_deadline: float | None = None
+    calibration_samples: list[tuple[float, float, float, float]] = field(default_factory=list)
     trust_score: float = 100.0
     total_flags: int = 0
     active_code: IndicationCode = IndicationCode.NORMAL
@@ -123,6 +131,22 @@ class MonitoringState:
     behavior_start_time: float | None = None
     normal_since_time: float | None = None
     last_logged_time: float | None = None
+
+    @property
+    def is_calibrating(self) -> bool:
+        """Bernilai True apabila sedang dalam proses hitung mundur kalibrasi."""
+        return self.calibration_deadline is not None
+
+    def start_calibration_countdown(self, now_monotonic: float, duration_sec: float) -> None:
+        """Memulai hitung mundur agar mata peserta sempat kembali menatap tengah layar."""
+        self.calibration_deadline = now_monotonic + duration_sec
+        self.calibration_samples.clear()
+        self.clear_active_behavior()
+
+    def cancel_calibration_countdown(self) -> None:
+        """Membatalkan hitung mundur kalibrasi apabila jumlah wajah tidak valid."""
+        self.calibration_deadline = None
+        self.calibration_samples.clear()
 
     def update_ema(
         self,
@@ -169,9 +193,9 @@ class MonitoringState:
         yaw: float,
         pitch: float,
         gaze_x: float = 0.50,
-        gaze_y: float = 0.00,
+        gaze_y: float = -0.11,
     ) -> None:
-        """Menetapkan titik acuan orientasi kepala dan bola mata peserta."""
+        """Menetapkan titik acuan orientasi kepala dan bola mata peserta secara langsung."""
         self.baseline_yaw = yaw
         self.baseline_pitch = pitch
         self.baseline_gaze_x = gaze_x
@@ -180,6 +204,8 @@ class MonitoringState:
         self.smoothed_pitch = pitch
         self.smoothed_gaze_x = gaze_x
         self.smoothed_gaze_y = gaze_y
+        self.calibration_deadline = None
+        self.calibration_samples.clear()
         self.is_calibrated = True
         self.clear_active_behavior()
 
