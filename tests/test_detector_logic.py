@@ -262,12 +262,29 @@ def test_hardware_locked_3d_ray_casting_1cm_screen_and_21cm_touchpad() -> None:
     f_shifted_center = _make_face_3d(eye_x_cm=5.0, head_yaw_deg=-6.8)  # Menatap tengah layar X ~ 0 cm
     assert evaluate_instant_indication(180.0, 5.0, [f_shifted_center], cfg)[0] == IndicationCode.NORMAL
 
-    # 5. >1 cm di ATAS bezel kamera (Y < -1.0 cm)
-    f_eye_up = _make_face_3d(eye_y_cm=0.5, gaze_y=-0.130 - (3.0 / 300.0))  # Y_hit ~ -1.7 cm
+    # 5. >1 cm di ATAS bezel kamera (Y < -1.0 cm): baik dari kepala lurus maupun kepala menghadap tengah layar (+12 deg)
+    f_eye_up = _make_face_3d(eye_y_cm=0.5, gaze_y=-0.130 - (3.0 / 380.0))  # Y_hit ~ -1.7 cm
     c_up, l_up = evaluate_instant_indication(180.0, 5.0, [f_eye_up], cfg)
     assert c_up == IndicationCode.IND_02 and "ATAS" in l_up
 
-    # 6. Tepat mencapai / melewati titik akhir bawah touchpad (>= 21.0 cm)
+    f_center_head_eye_up = _make_face_3d(
+        eye_y_cm=0.5,
+        eye_z_cm=42.0,
+        head_pitch_deg=12.0,
+        gaze_y=-0.168,  # Lirikan mata murni ke >1 cm di atas bezel saat kepala diam di tengah layar
+    )
+    c_cup, l_cup = evaluate_instant_indication(180.0, 5.0, [f_center_head_eye_up], cfg)
+    assert c_cup == IndicationCode.IND_02 and l_cup == "MELIRIK MATA KE ATAS"
+
+    # 6. Kontinuitas garis engsel (Y_scr tepat di hinge_y_cm -> deck_z_cm mendekati 0.0 cm) pada 90 deg & 102 deg
+    hinge_pitch_deg = math.degrees(math.atan2(cfg.hinge_y_cm - 1.0 + 0.01, 42.0))
+    f_at_hinge = _make_face_3d(eye_y_cm=1.0, eye_z_cm=42.0, head_pitch_deg=hinge_pitch_deg)
+    hit_hinge_90 = project_gaze_3d(f_at_hinge, cfg)
+    hit_hinge_102 = project_gaze_3d(f_at_hinge, DetectorConfig(lid_angle_deg=102.0))
+    assert hit_hinge_90.on_keyboard_deck is True and hit_hinge_90.deck_z_cm == pytest.approx(0.0, abs=0.05)
+    assert hit_hinge_102.on_keyboard_deck is True and hit_hinge_102.deck_z_cm == pytest.approx(0.0, abs=0.05)
+
+    # 7. Tepat mencapai / melewati titik akhir bawah touchpad (>= 21.0 cm) pada sudut 90 deg & miring 102 deg
     f_touchpad_end_eye = _make_face_3d(
         eye_y_cm=1.0,
         eye_z_cm=42.0,
@@ -279,6 +296,15 @@ def test_hardware_locked_3d_ray_casting_1cm_screen_and_21cm_touchpad() -> None:
     assert hit_tp.deck_z_cm >= 21.0
     c_tp, l_tp = evaluate_instant_indication(180.0, 5.0, [f_touchpad_end_eye], cfg)
     assert c_tp == IndicationCode.IND_02 and "TOUCHPAD" in l_tp
+
+    cfg_tilted = DetectorConfig(lid_angle_deg=102.0)
+    alpha_rad = math.radians(12.0)
+    tp_y = cfg_tilted.hinge_y_cm + 21.0 * math.sin(alpha_rad)
+    tp_z = 21.0 * math.cos(alpha_rad)
+    exact_tp_pitch = math.degrees(math.atan2(tp_y - 9.38, 46.26 - tp_z))
+    f_tilted_tp = _make_face_3d(eye_y_cm=9.38, eye_z_cm=46.26, head_pitch_deg=exact_tp_pitch)
+    hit_tilted_tp = project_gaze_3d(f_tilted_tp, cfg_tilted)
+    assert hit_tilted_tp.deck_z_cm == pytest.approx(21.0, abs=0.05)
 
 
 def test_anti_spoof_lens_calibration_accepts_honest_and_rejects_cheating() -> None:
@@ -342,7 +368,20 @@ def test_anti_spoof_lens_calibration_accepts_honest_and_rejects_cheating() -> No
     res_ok = advance_lens_calibration(honest_state, [honest_face], 2.05, cfg)
     assert res_ok is not None and res_ok.calibration_event == "COMPLETED"
     assert honest_state.is_calibrated is True
+    assert honest_state.smoothed_pose is None
     assert abs(honest_state.calib_yaw_offset_deg) <= cfg.max_calib_offset_yaw_deg
+
+    # Skenario Jujur + Kedipan Alami Sesaat (4 frame blink di tengah 12 frame jendela 0.8s) -> TETAP LULUS!
+    blink_cal_state = MonitoringState()
+    blink_cal_state.start_lens_calibration(0.0, 2.0)
+    transient_blink_face = _make_face_3d(gaze_x=0.650, gaze_y=0.050, ear=0.06)
+    for idx in range(12):
+        t_step = 1.25 + idx * 0.06
+        sample_face = transient_blink_face if idx in (3, 4, 5, 6) else honest_face
+        advance_lens_calibration(blink_cal_state, [sample_face], t_step, cfg)
+    res_blink_ok = advance_lens_calibration(blink_cal_state, [honest_face], 2.05, cfg)
+    assert res_blink_ok is not None and res_blink_ok.calibration_event == "COMPLETED"
+    assert blink_cal_state.is_calibrated is True
 
 
 def test_vor_compensation_and_blink_guard() -> None:

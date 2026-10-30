@@ -80,6 +80,7 @@ class DetectorConfig:
     hinge_y_cm: float = 20.20
     touchpad_end_depth_cm: float = 21.00
     edge_margin_cm: float = 1.00
+    lid_angle_deg: float = 90.0
 
     # Parameter MediaPipe 3D Pose, Iris Socket Angular Gain, & EMA
     max_num_faces: int = 3
@@ -92,7 +93,7 @@ class DetectorConfig:
     neutral_gaze_x: float = 0.520
     neutral_gaze_y: float = -0.130
     eye_yaw_gain_deg: float = 500.0
-    eye_pitch_up_gain_deg: float = 300.0
+    eye_pitch_up_gain_deg: float = 380.0
     eye_pitch_down_gain_deg: float = 380.0
     head_label_yaw_deg: float = 10.0
     head_label_pitch_deg: float = 9.0
@@ -101,15 +102,16 @@ class DetectorConfig:
     # Parameter Kalibrasi 1-Titik Lensa Kamera & 5-Layer Anti-Spoof Gate
     calibration_duration_sec: float = 2.0
     calibration_sample_window_sec: float = 0.8
+    min_valid_calib_samples: int = 5
     min_calib_distance_cm: float = 25.0
     max_calib_distance_cm: float = 85.0
     min_calib_ear: float = 0.16
-    min_calib_gaze_y: float = -0.180
-    max_calib_gaze_y: float = -0.080
+    min_calib_gaze_y: float = -0.200
+    max_calib_gaze_y: float = -0.065
     max_calib_head_yaw_error_deg: float = 12.0
     min_calib_head_pitch_error_deg: float = -24.0  # Mengizinkan kemiringan engsel layar 90-115 deg
     max_calib_head_pitch_error_deg: float = 12.0
-    max_calib_offset_yaw_deg: float = 9.0
+    max_calib_offset_yaw_deg: float = 11.5
     min_calib_offset_pitch_deg: float = -12.0
     max_calib_offset_pitch_deg: float = 24.0
     max_calib_std_yaw_deg: float = 3.5
@@ -209,6 +211,7 @@ class MonitoringState:
         self.calibration_samples.clear()
         self.last_calibration_error = None
         self.is_calibrated = True
+        self.reset_ema()
         self.clear_active_behavior()
 
     def update_ema_pose(

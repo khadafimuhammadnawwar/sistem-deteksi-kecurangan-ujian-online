@@ -15,8 +15,8 @@ Use this skill whenever building, tuning, or auditing webcam eye-gaze and head-p
 
 - **Vulnerability (Calibration Poisoning / Spoofing):** Multi-point boundary calibration (asking a test-taker to look at Left, Right, Top, and Bottom edges) allows a dishonest user to look far outside the monitor during calibration, inflating the safe zone.
 - **Defense (Hardware-Locked 3D Geometry + Anti-Spoof Lens Reference):**
-  1. Lock physical device dimensions (`screen_width_cm`, `screen_height_cm`, `hinge_y_cm`, `touchpad_end_depth_cm`, `edge_margin_cm`) in supervisor configuration (`DetectorConfig`).
-  2. Use a **1-Point Physical Webcam Lens Check** `(0, 0, 0)` ONLY to measure personal anatomical Angle-Kappa offset (`±8.5°` yaw, `±10.0°` pitch max).
+  1. Lock physical device dimensions (`screen_width_cm`, `screen_height_cm`, `hinge_y_cm`, `touchpad_end_depth_cm`, `edge_margin_cm`, `lid_angle_deg`) in supervisor configuration (`DetectorConfig`).
+  2. Use a **1-Point Physical Webcam Lens Check** `(0, 0, 0)` ONLY to measure personal anatomical Angle-Kappa offset (`±11.5°` yaw, `-12°..+24°` pitch max), filtering transient single blinks (`EAR >= min_calib_ear`) while requiring `>= min_valid_calib_samples` open-eye frames.
   3. Reject calibration immediately if head angle, iris socket ratio, eye aspect ratio (`EAR`), distance (`Z_cm`), or sample variance violates anatomical bounds.
 
 ## 2. Coordinate System & MediaPipe 3D Metric Extraction
@@ -37,12 +37,11 @@ Combine 3D head pose angles with 478-landmark iris socket angular displacement (
 1. **Vertical Screen Plane (`Z = 0`):**
    - `screen_x_cm = eye_x_cm + eye_z_cm * tan(radians(total_yaw_deg))`
    - `screen_y_cm = eye_y_cm + eye_z_cm * tan(radians(total_pitch_deg))`
-2. **Horizontal Keyboard & Touchpad Deck Plane (`Y = hinge_y_cm`, `Z in [0, touchpad_end_depth_cm]`):**
-   - When `screen_y_cm > hinge_y_cm` and `tan_pitch > 0`:
-     - `drop_cm = max(6.0, hinge_y_cm - eye_y_cm)`
-     - `t_ray_cm = drop_cm / tan_pitch`
-     - `deck_z_cm = eye_z_cm - t_ray_cm` (`0 cm` at screen hinge, increasing toward front edge of touchpad/lap)
-     - `hit_x_cm = eye_x_cm + t_ray_cm * tan_yaw`
+2. **Keyboard & Touchpad Deck Plane (`lid_angle_deg = 90° + alpha_tilt`, `Z in [0, touchpad_end_depth_cm]`):**
+   - When `screen_y_cm > hinge_y_cm` and `sin(alpha_tilt) + cos(alpha_tilt) * tan_pitch > 0`:
+     - `deck_z_cm = (screen_y_cm - hinge_y_cm) / (sin(alpha_tilt) + cos(alpha_tilt) * tan_pitch)` (`0 cm` continuously at screen hinge, `21.0 cm` at touchpad front edge)
+     - `s_ray_cm = max(0.0, eye_z_cm - deck_z_cm * cos(alpha_tilt))`
+     - `hit_x_cm = eye_x_cm + s_ray_cm * tan_yaw`
 3. **Physical Trigger Rules:**
    - **Horizontal (`IND-01`):** `abs(hit_x_cm) > (screen_width_cm / 2.0 + edge_margin_cm)`
    - **Vertical Top (`IND-02`):** `screen_y_cm < -edge_margin_cm`

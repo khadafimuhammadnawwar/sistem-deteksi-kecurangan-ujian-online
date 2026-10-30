@@ -174,25 +174,25 @@ def _draw_camera_banner_and_footer(
         )
         if hit.on_keyboard_deck:
             hud_text = (
-                f"X:{hit.hit_x_cm:+5.1f}cm | "
-                f"Touchpad:{hit.deck_z_cm:4.1f}/{config.touchpad_end_depth_cm:.0f}cm | "
+                f"X:{hit.hit_x_cm:+5.1f}/{config.half_safe_width_cm:.1f} | "
+                f"Deck:{hit.deck_z_cm:4.1f}/{config.touchpad_end_depth_cm:.0f}cm | "
                 f"Z:{primary.eye_z_cm:.0f}cm"
             )
         else:
             hud_text = (
-                f"X:{hit.hit_x_cm:+5.1f}cm | "
-                f"Y:{hit.screen_y_cm:+5.1f}cm | "
+                f"X:{hit.hit_x_cm:+5.1f}/{config.half_safe_width_cm:.1f} | "
+                f"Y:{hit.screen_y_cm:+5.1f}[-1..20] | "
                 f"Z:{primary.eye_z_cm:.0f}cm"
             )
     else:
-        hud_text = "X:  -- cm | Y:  -- cm | Z: -- cm"
+        hud_text = "X:  -- /16.1 | Y:  -- [-1..20] | Z: -- cm"
 
     cv2.putText(
         dashboard,
         hud_text,
-        (242, 470),
+        (232, 470),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.42,
+        0.40,
         (200, 255, 200),
         1,
     )

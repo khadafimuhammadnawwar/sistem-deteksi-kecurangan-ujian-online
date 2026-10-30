@@ -36,8 +36,8 @@ Setiap frame video berukuran 640x480 piksel wajib diproses melalui 6 tahapan ber
    - Menghitung perpotongan sinar pandang 3D dari koordinat mata $(X_e, Y_e, Z_e)$ terhadap:
      - **Bidang Layar Vertikal ($Z = 0$):**
        $$X_{\text{scr}} = X_e + Z_e \tan(\theta_{\text{yaw}}), \quad Y_{\text{scr}} = Y_e + Z_e \tan(\theta_{\text{pitch}})$$
-     - **Bidang Dek Keyboard & Touchpad Horizontal ($Y = H_{\text{hinge}} = 20.2\text{ cm}$ saat $Y_{\text{scr}} > H_{\text{hinge}}$):**
-       $$Z_{\text{deck}} = Z_e - \frac{\max(6.0, H_{\text{hinge}} - Y_e)}{\tan(\theta_{\text{pitch}})}, \quad X_{\text{deck}} = X_e + (Z_e - Z_{\text{deck}})\tan(\theta_{\text{yaw}})$$
+     - **Bidang Dek Keyboard & Touchpad Berengsel $\theta_{\text{lid}} = 90^\circ + \alpha_{\text{tilt}}$ (saat $Y_{\text{scr}} > H_{\text{hinge}} = 20.2\text{ cm}$):**
+       $$Z_{\text{deck}} = \frac{Y_{\text{scr}} - H_{\text{hinge}}}{\sin\alpha_{\text{tilt}} + \cos\alpha_{\text{tilt}} \tan(\theta_{\text{pitch}})}, \quad X_{\text{deck}} = X_e + (Z_e - Z_{\text{deck}}\cos\alpha_{\text{tilt}})\tan(\theta_{\text{yaw}})$$
    - Dilengkapi proteksi kedipan alami ($\text{EAR} \ge 0.12$) agar kedipan tidak menimbulkan lonjakan sudut iris sementara pelacakan kepala 3D tetap aktif.
 5. **Filtering Spasial pada ROI Wajah:**
    Potong *Region of Interest* (ROI) Wajah #1 ke $110\times 110$ piksel, terapkan Grayscale + CLAHE, lalu konvolusi **Gaussian Blur kernel $5\times 5$** ($\sigma = 0$).
@@ -62,7 +62,7 @@ Evaluasi indikasi diproses setelah peserta lulus **Kalibrasi Lensa Anti-Spoof** 
 
 *Keamanan Kalibrasi 5-Layer Anti-Spoof (`[SPASI]` / `[C]`, durasi `2.0 s`):*
 - Peserta diminta menatap lurus **Lensa Fisik Webcam `(0, 0, 0)`** hanya untuk mengukur offset anatomi *Angle-Kappa* alami serta sudut kemiringan engsel layar ($90^\circ\text{–}115^\circ$).
-- Kalibrasi **DITOLAK OTOMATIS** apabila jarak di luar `25–85 cm`, mata menyipit ($\text{EAR} < 0.16$), pandangan bergoyang tidak stabil, kepala menoleh $> 12^\circ$, atau iris melirik ke luar rentang anatomi lensa (`calib_yaw_offset_deg` terkunci maks $\pm 9.0^\circ$). Batas zona aman fisik `cm` **tidak pernah dapat diperlebar oleh peserta**.
+- Kalibrasi menyaring kedipan alami sesaat ($\text{EAR} \ge 0.16$) namun **DITOLAK OTOMATIS** apabila jarak di luar `25–85 cm`, mata terus menyipit/terpejam (`< 5` sampel terbuka), pandangan bergoyang tidak stabil, kepala menoleh $> 12^\circ$, atau iris melirik ke luar rentang anatomi lensa (`calib_yaw_offset_deg` terkunci maks $\pm 11.5^\circ$). Batas zona aman fisik `cm` **tidak pernah dapat diperlebar oleh peserta**.
 
 ---
 

@@ -280,7 +280,12 @@ def project_gaze_3d(
     screen_x_cm = face.eye_x_cm + face.eye_z_cm * tan_yaw
     screen_y_cm = face.eye_y_cm + face.eye_z_cm * tan_pitch
 
-    if screen_y_cm <= config.hinge_y_cm or tan_pitch <= 0.001:
+    alpha_tilt_rad = math.radians(max(0.0, min(60.0, config.lid_angle_deg - 90.0)))
+    sin_tilt = math.sin(alpha_tilt_rad)
+    cos_tilt = math.cos(alpha_tilt_rad)
+    denom = sin_tilt + (cos_tilt * tan_pitch)
+
+    if screen_y_cm <= config.hinge_y_cm or denom <= 0.001:
         return GazeRayHit3D(
             screen_x_cm=float(screen_x_cm),
             screen_y_cm=float(screen_y_cm),
@@ -293,10 +298,9 @@ def project_gaze_3d(
             eye_pitch_deg=float(eye_pitch_deg),
         )
 
-    drop_cm = max(6.0, config.hinge_y_cm - face.eye_y_cm)
-    t_ray_cm = drop_cm / tan_pitch
-    deck_z_cm = max(0.0, face.eye_z_cm - t_ray_cm)
-    hit_x_cm = face.eye_x_cm + t_ray_cm * tan_yaw
+    deck_z_cm = max(0.0, (screen_y_cm - config.hinge_y_cm) / denom)
+    s_ray_cm = max(0.0, face.eye_z_cm - (deck_z_cm * cos_tilt))
+    hit_x_cm = face.eye_x_cm + s_ray_cm * tan_yaw
 
     return GazeRayHit3D(
         screen_x_cm=float(screen_x_cm),
@@ -317,20 +321,26 @@ def validate_and_compute_lens_offset(
 ) -> tuple[bool, float, float, str]:
     """
     Memvalidasi sampel kalibrasi 1 titik menatap Lensa Fisik Webcam (0, 0, 0) menggunakan
-    5-Layer Anti-Spoof Gate agar peserta tidak dapat memalsukan sudut pandang saat kalibrasi.
+    5-Layer Anti-Spoof Gate (dilengkapi penyaring kedipan alami) agar mustahil diakali.
     """
     if not samples:
         return False, 0.0, 0.0, "KALIBRASI GAGAL: SAMPEL WAJAH TIDAK DITEMUKAN"
 
-    n = len(samples)
-    mean_x = sum(s.eye_x_cm for s in samples) / n
-    mean_y = sum(s.eye_y_cm for s in samples) / n
-    mean_z = sum(s.eye_z_cm for s in samples) / n
-    mean_hyaw = sum(s.head_yaw_deg for s in samples) / n
-    mean_hpitch = sum(s.head_pitch_deg for s in samples) / n
-    mean_gx = sum(s.gaze_x for s in samples) / n
-    mean_gy = sum(s.gaze_y for s in samples) / n
-    mean_ear = sum(s.ear for s in samples) / n
+    # Layer 2 (Blink-Proof Gate): Saring kedipan singkat, tolak jika mata terus menyipit/terpejam
+    open_samples = [s for s in samples if s.ear >= config.min_calib_ear]
+    min_required = min(len(samples), config.min_valid_calib_samples)
+    if not open_samples or len(open_samples) < min_required:
+        return False, 0.0, 0.0, "DITOLAK: BUKA MATA & TATAP LENSA KAMERA"
+
+    n = len(open_samples)
+    mean_x = sum(s.eye_x_cm for s in open_samples) / n
+    mean_y = sum(s.eye_y_cm for s in open_samples) / n
+    mean_z = sum(s.eye_z_cm for s in open_samples) / n
+    mean_hyaw = sum(s.head_yaw_deg for s in open_samples) / n
+    mean_hpitch = sum(s.head_pitch_deg for s in open_samples) / n
+    mean_gx = sum(s.gaze_x for s in open_samples) / n
+    mean_gy = sum(s.gaze_y for s in open_samples) / n
+    mean_ear = sum(s.ear for s in open_samples) / n
 
     # Layer 1: Validasi jarak fisik wajar di depan laptop (25 - 85 cm)
     if not (config.min_calib_distance_cm <= mean_z <= config.max_calib_distance_cm):
@@ -341,14 +351,10 @@ def validate_and_compute_lens_offset(
             f"DITOLAK: JARAK WAJAH {mean_z:.0f}CM (WAJIB 25-85CM)",
         )
 
-    # Layer 2: Validasi mata terbuka (mencegah kalibrasi sambil merem/menyipit ekstrem)
-    if mean_ear < config.min_calib_ear:
-        return False, 0.0, 0.0, "DITOLAK: BUKA MATA & TATAP LENSA KAMERA"
-
     # Layer 3: Validasi kestabilan tatapan (mencegah lirikan cepat / saccade spoofing)
     if n >= 2:
-        var_yaw = sum((s.head_yaw_deg - mean_hyaw) ** 2 for s in samples) / n
-        var_gx = sum((s.gaze_x - mean_gx) ** 2 for s in samples) / n
+        var_yaw = sum((s.head_yaw_deg - mean_hyaw) ** 2 for s in open_samples) / n
+        var_gx = sum((s.gaze_x - mean_gx) ** 2 for s in open_samples) / n
         if (
             math.sqrt(var_yaw) > config.max_calib_std_yaw_deg
             or math.sqrt(var_gx) > config.max_calib_std_gaze_x
