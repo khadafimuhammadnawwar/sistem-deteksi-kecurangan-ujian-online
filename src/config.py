@@ -108,15 +108,16 @@ class DetectorConfig:
     min_calib_distance_cm: float = 25.0
     max_calib_distance_cm: float = 85.0
     min_calib_ear: float = 0.16
-    min_calib_gaze_y: float = -0.200
-    max_calib_gaze_y: float = -0.065
-    max_calib_head_yaw_error_deg: float = 10.0
+    min_calib_gaze_y: float = -0.185
+    max_calib_gaze_y: float = -0.100
+    max_calib_eye_offset_x_cm: float = 6.0  # Peserta wajib duduk di tengah layar saat kalibrasi (target yaw ~0)
+    max_calib_head_yaw_error_deg: float = 6.0
     min_calib_head_pitch_error_deg: float = -24.0  # Mengizinkan kemiringan engsel layar 90-115 deg
     max_calib_head_pitch_error_deg: float = 12.0
     max_calib_offset_yaw_deg: float = 2.5  # Offset yaw yang DIPAKAI (clamp): sumbu horizontal laptop simetris X=0
-    max_calib_reject_yaw_deg: float = 11.5  # Offset yaw ekstrem di atas ini DITOLAK (indikasi melirik curang)
-    min_calib_offset_pitch_deg: float = -12.0
-    max_calib_offset_pitch_deg: float = 24.0
+    max_calib_reject_yaw_deg: float = 4.5  # Offset yaw di atas ini DITOLAK (~3.3 cm pada jarak 42 cm)
+    min_calib_offset_pitch_deg: float = -2.0
+    max_calib_offset_pitch_deg: float = 8.0  # Batas atas bergeser +(lid_angle_deg - 90) untuk engsel miring
     max_calib_std_yaw_deg: float = 3.5
     max_calib_std_gaze_x: float = 0.025
 

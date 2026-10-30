@@ -351,6 +351,15 @@ def validate_and_compute_lens_offset(
             f"DITOLAK: JARAK WAJAH {mean_z:.0f}CM (WAJIB 25-85CM)",
         )
 
+    # Layer 1b: Peserta wajib duduk di tengah layar saat kalibrasi agar target lensa hampir lurus (yaw ~0)
+    if abs(mean_x) > config.max_calib_eye_offset_x_cm:
+        return (
+            False,
+            0.0,
+            0.0,
+            f"DITOLAK: DUDUK TEPAT DI TENGAH LAYAR (X={mean_x:+.0f}CM)",
+        )
+
     # Layer 3: Validasi kestabilan tatapan (mencegah lirikan cepat / saccade spoofing)
     if n >= 2:
         var_yaw = sum((s.head_yaw_deg - mean_hyaw) ** 2 for s in open_samples) / n
@@ -387,12 +396,18 @@ def validate_and_compute_lens_offset(
     yaw_offset = target_yaw_deg - (mean_hyaw + raw_eye_yaw)
     pitch_offset = target_pitch_deg - (mean_hpitch + raw_eye_pitch)
 
+    max_pitch_offset = config.max_calib_offset_pitch_deg + max(
+        0.0, config.lid_angle_deg - 90.0
+    )
     if abs(yaw_offset) > config.max_calib_reject_yaw_deg or not (
-        config.min_calib_offset_pitch_deg
-        <= pitch_offset
-        <= config.max_calib_offset_pitch_deg
+        config.min_calib_offset_pitch_deg <= pitch_offset <= max_pitch_offset
     ):
-        return False, 0.0, 0.0, "ANTI-SPOOF: JANGAN MELIRIK, TATAP TEPAT LENSA!"
+        return (
+            False,
+            0.0,
+            0.0,
+            f"ANTI-SPOOF: TATAP TEPAT LENSA! (yaw {yaw_offset:+.1f}, pitch {pitch_offset:+.1f} derajat)",
+        )
 
     # Sumbu horizontal laptop simetris fisik (X=0): offset yaw yang dipakai dijepit kecil
     clamped_yaw_offset = max(

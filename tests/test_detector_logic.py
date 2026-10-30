@@ -397,6 +397,8 @@ def test_anti_spoof_lens_calibration_accepts_honest_and_rejects_cheating() -> No
     assert res_down is not None and res_down.calibration_event == "REJECTED"
 
     # Skenario Jujur + Engsel Layar Miring 108 deg (head_pitch_deg=-14 deg di kamera) -> SUKSES!
+    # Jendela pitch kalibrasi bergeser mengikuti lid_angle_deg yang dikunci supervisor.
+    cfg_tilt = DetectorConfig(lid_angle_deg=108.0)
     honest_state = MonitoringState()
     honest_state.start_lens_calibration(0.0, 2.0)
     honest_face = _make_face_3d(
@@ -409,13 +411,13 @@ def test_anti_spoof_lens_calibration_accepts_honest_and_rejects_cheating() -> No
         gaze_y=-0.128,
         ear=0.35,
     )
-    advance_lens_calibration(honest_state, [honest_face], 1.4, cfg)
-    advance_lens_calibration(honest_state, [honest_face], 1.8, cfg)
-    res_ok = advance_lens_calibration(honest_state, [honest_face], 2.05, cfg)
+    advance_lens_calibration(honest_state, [honest_face], 1.4, cfg_tilt)
+    advance_lens_calibration(honest_state, [honest_face], 1.8, cfg_tilt)
+    res_ok = advance_lens_calibration(honest_state, [honest_face], 2.05, cfg_tilt)
     assert res_ok is not None and res_ok.calibration_event == "COMPLETED"
     assert honest_state.is_calibrated is True
     assert honest_state.smoothed_pose is None
-    assert abs(honest_state.calib_yaw_offset_deg) <= cfg.max_calib_offset_yaw_deg
+    assert abs(honest_state.calib_yaw_offset_deg) <= cfg_tilt.max_calib_offset_yaw_deg
 
     # Skenario Jujur + Kedipan Alami Sesaat (4 frame blink di tengah 12 frame jendela 0.8s) -> TETAP LULUS!
     blink_cal_state = MonitoringState()
@@ -424,10 +426,53 @@ def test_anti_spoof_lens_calibration_accepts_honest_and_rejects_cheating() -> No
     for idx in range(12):
         t_step = 1.25 + idx * 0.06
         sample_face = transient_blink_face if idx in (3, 4, 5, 6) else honest_face
-        advance_lens_calibration(blink_cal_state, [sample_face], t_step, cfg)
-    res_blink_ok = advance_lens_calibration(blink_cal_state, [honest_face], 2.05, cfg)
+        advance_lens_calibration(blink_cal_state, [sample_face], t_step, cfg_tilt)
+    res_blink_ok = advance_lens_calibration(
+        blink_cal_state, [honest_face], 2.05, cfg_tilt
+    )
     assert res_blink_ok is not None and res_blink_ok.calibration_event == "COMPLETED"
     assert blink_cal_state.is_calibrated is True
+
+
+def _run_calibration(face: DetectedFace, cfg: DetectorConfig) -> str | None:
+    """Menjalankan kalibrasi 2 detik dengan wajah konstan; mengembalikan event akhir."""
+    state = MonitoringState()
+    state.start_lens_calibration(0.0, 2.0)
+    advance_lens_calibration(state, [face], 1.4, cfg)
+    advance_lens_calibration(state, [face], 1.8, cfg)
+    result = advance_lens_calibration(state, [face], 2.05, cfg)
+    return None if result is None else result.calibration_event
+
+
+def test_calibration_rejects_gaze_about_4_5cm_off_lens() -> None:
+    """Menatap ~4.5 cm (~6 derajat pada 42 cm) di luar lensa harus DITOLAK; tatapan jujur LULUS."""
+    cfg = DetectorConfig()
+    base = {
+        "eye_x_cm": 0.0,
+        "eye_y_cm": 1.2,
+        "eye_z_cm": 42.0,
+        "head_yaw_deg": 0.0,
+        "head_pitch_deg": -5.0,  # Pitch offset jujur ~ +3.4 derajat (hasil ukur sesi nyata)
+        "ear": 0.35,
+    }
+    honest = _make_face_3d(gaze_x=0.520, gaze_y=-0.128, **base)
+    assert _run_calibration(honest, cfg) == "COMPLETED"
+
+    below = _make_face_3d(gaze_x=0.520, gaze_y=-0.128 + 7.0 / cfg.eye_pitch_down_gain_deg, **base)
+    above = _make_face_3d(gaze_x=0.520, gaze_y=-0.128 - 7.0 / cfg.eye_pitch_up_gain_deg, **base)
+    right = _make_face_3d(gaze_x=0.520 + 7.0 / cfg.eye_yaw_gain_deg, gaze_y=-0.128, **base)
+    left = _make_face_3d(gaze_x=0.520 - 7.0 / cfg.eye_yaw_gain_deg, gaze_y=-0.128, **base)
+    for off_lens_face in (below, above, right, left):
+        assert _run_calibration(off_lens_face, cfg) == "REJECTED"
+
+
+def test_calibration_rejects_off_center_seating() -> None:
+    """Duduk >6 cm dari tengah layar saat kalibrasi ditolak (target lensa tidak lurus)."""
+    cfg = DetectorConfig()
+    off_center = _make_face_3d(
+        eye_x_cm=-11.0, eye_y_cm=1.2, eye_z_cm=43.0, head_pitch_deg=-5.0, ear=0.35
+    )
+    assert _run_calibration(off_center, cfg) == "REJECTED"
 
 
 def test_vor_compensation_and_blink_guard() -> None:
