@@ -2,81 +2,79 @@
 # Sistem Deteksi Indikasi Kecurangan pada Ujian Online Berbasis Citra Digital
 
 ## 1. Visi & Filosofi Sistem
-Sistem ini adalah aplikasi *Computer-Assisted Proctoring* berbasis pengolahan citra digital dan *computer vision* menggunakan Python.
+Sistem ini adalah aplikasi *Computer-Assisted Proctoring* berbasis pengolahan citra digital dan *3D computer vision* menggunakan Python.
 
 **Prinsip Kerja (Non-Auto Banning / Decision Support System):**
 Sistem **TIDAK** mendiskualifikasi atau mengeluarkan peserta secara otomatis. Sistem berperan sebagai pendeteksi indikasi awal (*Suspicious Behavior Flagging*) dengan cara:
-1. Memantau luminansi pencahayaan global, kepadatan tepi global (*Global Canny Edge Density*), koordinat pandang gabungan kepala & bola mata (*Unified Point-of-Regard* `POR_x` & `POR_y`), keberadaan wajah, dan jumlah orang dalam frame secara *real-time*.
-2. Menerapkan **Kalibrasi 5 Titik Batas Fisik Laptop** (`Tengah Layar` $\rightarrow$ `Tepi Kiri` $\rightarrow$ `Tepi Kanan` $\rightarrow$ `Bezel Atas` $\rightarrow$ `Titik Akhir Touchpad`) sehingga seluruh permukaan layar & papan ketik aman dilihat, sedangkan pandangan keluar `~1 cm` di sisi kiri/kanan/atas layar atau mencapai titik akhir bawah touchpad langsung terdeteksi secara presisi dan simetris.
+1. Memantau luminansi pencahayaan global, kepadatan tepi global (*Global Canny Edge Density*), proyeksi sinar pandang 3D (*L-Shaped 3D Gaze Ray-Casting* dalam satuan `cm`), keberadaan wajah, dan jumlah orang dalam frame secara *real-time*.
+2. Mengunci geometri fisik perangkat di sisi pengawas (**Lenovo IdeaPad Slim 5 14IMH9**: layar `14.0"` `16:10` berukuran $30.16 \times 18.85\text{ cm}$, tinggi engsel $20.2\text{ cm}$, dan kedalaman titik akhir bawah touchpad $21.0\text{ cm}$) serta menerapkan **Kalibrasi 1-Titik Lensa Fisik Webcam dengan 5-Layer Anti-Spoof Gate** sehingga mustahil diakali peserta.
 3. Mengurangi *Trust Score* (Skor Integritas), menampilkan eskalasi status integritas (`AMAN`, `WASPADA`, `TINJAUAN PENGAWAS`), mencatat log kejadian ke `log_indikasi_ujian.csv`, dan menyimpan bukti foto ber-anotasi ke direktori `bukti_indikasi/*.jpg`.
 
 ---
 
 ## 2. Ruang Lingkup Masalah (Mode 1: CBT Paperless / Ujian Teori)
-1. **Model Ujian:** Dikhususkan untuk ujian teori berbasis komputer tanpa kertas buram, catatan fisik, maupun gawai/HP (area kerja sah mencakup layar laptop dan papan ketik hingga batas atas titik akhir touchpad).
-2. **Perangkat:** 1 unit webcam bawaan laptop beresolusi 640x480 piksel menghadap wajah hingga batas bahu peserta.
-3. **Kondisi Lingkungan:** Menggunakan algoritma CLAHE pada kanal luminansi CIE-LAB agar tetap adaptif terhadap pencahayaan redup atau tidak merata, dikombinasikan dengan deteksi tepi Canny untuk menangkap oklusi kamera baik oleh benda gelap maupun benda terang polos.
+1. **Model Ujian:** Dikhususkan untuk ujian teori berbasis komputer tanpa kertas buram, catatan fisik, maupun gawai/HP (area kerja sah mencakup seluruh permukaan layar laptop serta dek keyboard hingga tepat sebelum ujung akhir bawah touchpad $21.0\text{ cm}$).
+2. **Perangkat:** 1 unit webcam bawaan laptop di tengah bezel atas `(0, 0, 0)` beresolusi 640x480 piksel menghadap wajah hingga batas bahu peserta.
+3. **Kondisi Lingkungan:** Menggunakan algoritma CLAHE pada kanal luminansi CIE-LAB agar adaptif terhadap pencahayaan redup/tidak merata, dikombinasikan dengan deteksi tepi Canny untuk menangkap oklusi kamera oleh benda gelap maupun benda terang polos.
 
 ---
 
-## 3. Pipeline Pengolahan Citra Digital (PCD)
-Setiap frame video berukuran 640x480 piksel wajib diproses melalui 6 tahapan matriks citra secara berurutan:
+## 3. Pipeline Pengolahan Citra Digital (PCD) & Proyeksi 3D
+Setiap frame video berukuran 640x480 piksel wajib diproses melalui 6 tahapan berurutan:
 
 1. **Akuisisi Citra & Pencerminan (Mirroring):**
-   Frame BGR diambil dari webcam dan dibalik secara horizontal menggunakan transformasi matriks pencerminan (`cv2.flip(frame, 1)`).
+   Frame BGR diambil dari webcam dan dibalik secara horizontal (`cv2.flip(frame, 1)`).
 2. **Konversi Ruang Warna, Luminansi Global & Deteksi Oklusi Tepi:**
-   - Konversi frame BGR ke Grayscale 1-channel menggunakan persamaan intensitas luminansi:
+   - Konversi BGR ke Grayscale 1-channel:
      $$Y = 0.299R + 0.587G + 0.114B$$
-   - Hitung nilai rata-rata piksel global ($\mu_Y$) untuk mendeteksi anomali kamera ditutup benda gelap atau ruangan gelap gulita ($\mu_Y < 35.0$).
-   - Terapkan Gaussian Blur $5\times 5$ dan operator Canny (`threshold1=50`, `threshold2=130`) pada citra global untuk menghitung *Global Edge Density* guna mendeteksi kamera ditutup benda terang polos/blur ekstrem ($< 1.0\%$ saat wajah tidak terdeteksi).
+   - Hitung rata-rata intensitas piksel global ($\mu_Y$) untuk mendeteksi ruangan gelap/oklusi gelap ($\mu_Y < 35.0$).
+   - Terapkan Gaussian Blur $5\times 5$ dan operator Canny (`threshold1=50`, `threshold2=130`) global untuk mendeteksi oklusi benda terang polos (*Global Edge Density* $< 1.0\%$ saat wajah $= 0$).
 3. **Peningkatan Kontras Adaptif (CIE-LAB CLAHE):**
-   - Konversi frame BGR ke ruang warna CIE-LAB.
-   - Terapkan CLAHE (*Contrast Limited Adaptive Histogram Equalization*) dengan `clipLimit=2.5` dan `tileGridSize=(8,8)` secara eksklusif pada kanal *Lightness* ($L$).
-   - Konversi kembali ke format BGR/RGB sebelum masuk ke pipeline deteksi landmark wajah.
-4. **Ekstraksi Fitur Geometri Kepala + Iris (*Unified Point-of-Regard*) & Penghalusan EMA:**
-   Mengekstrak 478 titik landmark (`RunningMode.VIDEO`), mengurutkan wajah berdasarkan luas *bounding box* terbesar sebagai peserta utama (Wajah #1), menghaluskan sinyal dengan EMA ($\alpha = 0.45$), lalu memetakan koordinat pandang gabungan kepala dan mata:
-   $$\text{POR}_{x} = \text{Gaze}_{x} + 0.55 \cdot (\text{Yaw} - \text{Yaw}_{\text{center}}), \quad \text{POR}_{y} = \text{Gaze}_{y} + 0.85 \cdot (\text{Pitch} - \text{Pitch}_{\text{center}})$$
-   dengan proteksi kedipan alami ($\text{EAR} \ge 0.09$) agar kedipan mata tidak menimbulkan lonjakan koordinat iris.
+   - Konversi BGR ke ruang warna CIE-LAB, terapkan CLAHE (`clipLimit=2.5`, `tileGridSize=(8,8)`) pada kanal *Lightness* ($L$), lalu kembalikan ke BGR/RGB sebelum deteksi landmark.
+4. **Ekstraksi Pose Metrik 3D & *L-Shaped 3D Gaze Ray-Casting* (`cm`):**
+   - Mengekstrak 478 titik landmark beserta matriks transformasi metrik $4\times 4$ (`output_facial_transformation_matrixes=True`), mengurutkan Wajah #1 berdasarkan luas *bounding box* terbesar, dan meredam getaran dengan EMA ($\alpha = 0.42$).
+   - Menghitung perpotongan sinar pandang 3D dari koordinat mata $(X_e, Y_e, Z_e)$ terhadap:
+     - **Bidang Layar Vertikal ($Z = 0$):**
+       $$X_{\text{scr}} = X_e + Z_e \tan(\theta_{\text{yaw}}), \quad Y_{\text{scr}} = Y_e + Z_e \tan(\theta_{\text{pitch}})$$
+     - **Bidang Dek Keyboard & Touchpad Horizontal ($Y = H_{\text{hinge}} = 20.2\text{ cm}$ saat $Y_{\text{scr}} > H_{\text{hinge}}$):**
+       $$Z_{\text{deck}} = Z_e - \frac{\max(6.0, H_{\text{hinge}} - Y_e)}{\tan(\theta_{\text{pitch}})}, \quad X_{\text{deck}} = X_e + (Z_e - Z_{\text{deck}})\tan(\theta_{\text{yaw}})$$
+   - Dilengkapi proteksi kedipan alami ($\text{EAR} \ge 0.12$) agar kedipan tidak menimbulkan lonjakan sudut iris sementara pelacakan kepala 3D tetap aktif.
 5. **Filtering Spasial pada ROI Wajah:**
-   Ambil *Region of Interest* (ROI) wajah utama, sesuaikan skala ke $110\times 110$ piksel, konversi ke Grayscale + CLAHE, lalu terapkan konvolusi **Gaussian Blur kernel $5\times 5$** ($\sigma = 0$) untuk meredam noise frekuensi tinggi.
+   Potong *Region of Interest* (ROI) Wajah #1 ke $110\times 110$ piksel, terapkan Grayscale + CLAHE, lalu konvolusi **Gaussian Blur kernel $5\times 5$** ($\sigma = 0$).
 6. **Segmentasi Biner & Ekstraksi Tepi pada ROI:**
-   - **Binarisasi Otsu:** Segmentasi adaptif otomatis memisahkan fitur wajah dari latar belakang (`cv2.THRESH_BINARY + cv2.THRESH_OTSU`).
-   - **Deteksi Tepi Canny:** Operator gradien intensitas tepi dengan ambang `threshold1=50` dan `threshold2=130`.
-   - **Metrik Edge Density ROI:** Dihitung dari persentase jumlah piksel tepi non-nol terhadap total ukuran ROI:
+   - **Binarisasi Otsu:** `cv2.THRESH_BINARY + cv2.THRESH_OTSU`.
+   - **Deteksi Tepi Canny:** `threshold1=50`, `threshold2=130`, dengan metrik:
      $$\text{Edge Density} = \frac{\sum \text{Edge Pixels}}{\text{Total Pixels}} \times 100\%$$
 
 ---
 
-## 4. Matriks Aturan Indikasi Kecurangan (*Rule-Based Temporal Logic*)
-Evaluasi indikasi diproses setelah **Kalibrasi 5 Titik Batas Fisik** selesai berdasarkan hierarki prioritas berikut:
+## 4. Matriks Aturan Indikasi Kecurangan (*Hardware-Locked Temporal Logic*)
+Evaluasi indikasi diproses setelah peserta lulus **Kalibrasi Lensa Anti-Spoof** berdasarkan hierarki prioritas berikut:
 
-| Prioritas | Kode | Jenis Perilaku | Ambang Pemicu (Batas Fisik `SafeZoneBounds`) | Ambang Durasi | Konsekuensi & Aksi |
+| Prioritas | Kode | Jenis Perilaku | Ambang Fisik Terkunci (`cm`) | Ambang Durasi | Konsekuensi & Aksi |
 | :---: | :--- | :--- | :--- | :---: | :--- |
 | **1** | **IND-05** | Kamera Tertutup / Oklusi | $\mu_Y < 35.0$ **atau** (*Global Edge* $< 1.0\%$ & wajah $= 0$) | $\ge 2.0\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
 | **2** | **IND-03** | Terdeteksi >1 Orang | Jumlah wajah $> 1$ | $\ge 1.0\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
 | **3** | **IND-04** | Wajah Tidak Terdeteksi | Jumlah wajah $= 0$ (pencahayaan & tepi normal) | $\ge 3.0\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
-| **4** | **IND-01** | Menoleh / Melirik Kiri-Kanan | $\text{POR}_{x} < x_{\text{kiri}} - 1\text{cm}$ atau $\text{POR}_{x} > x_{\text{kanan}} + 1\text{cm}$ | $\ge 2.5\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
-| **5** | **IND-02** | Menunduk-Mendongak / Lewat Touchpad | $\text{POR}_{y} < y_{\text{atas}} - 1\text{cm}$ atau $\text{POR}_{y} \ge y_{\text{akhir\_touchpad}}$ | Kepala $\ge 3.0\text{ s}$ / Mata $\ge 2.5\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
-| **6** | **NORMAL** | Fokus Area Layar & Keyboard | Tepat 1 wajah, pencahayaan normal, $\text{POR}_{x,y}$ di dalam zona aman laptop | *Real-time* | Banner Hijau, Reset Timer setelah *grace period* $0.3\text{ s}$ |
+| **4** | **IND-01** | Menoleh / Melirik Kiri-Kanan | $|X_{\text{hit}}| > 16.08\text{ cm}$ ($\frac{30.16}{2} + 1.0\text{ cm}$ di luar kiri/kanan layar) | $\ge 2.5\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
+| **5** | **IND-02** | Atas Layar / Lewat Touchpad | $Y_{\text{scr}} < -1.0\text{ cm}$ (atas bezel) **atau** $Z_{\text{deck}} \ge 21.0\text{ cm}$ (akhir touchpad) | Kepala $\ge 3.0\text{ s}$ / Mata $\ge 2.5\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
+| **6** | **NORMAL** | Fokus Layar & Keyboard | Tepat 1 wajah, $|X_{\text{hit}}| \le 16.08\text{ cm}$, $-1.0 \le Y_{\text{scr}} \le 20.2\text{ cm}$, $Z_{\text{deck}} < 21.0\text{ cm}$ | *Real-time* | Banner Hijau, Reset Timer setelah *grace period* $0.3\text{ s}$ |
 
-*Aturan Tambahan:*
-- **Kalibrasi 5 Titik Fisik (`[SPASI]` / `[C]`):** Memandu peserta menatap 5 batas berurutan (`2.0 detik` per titik, rata-rata sampel `0.8 detik` terakhir disertai sinyal suara *beep* tiap transisi): **(1) Tengah Layar**, **(2) Tepi Kiri Layar**, **(3) Tepi Kanan Layar**, **(4) Bezel Atas/Webcam**, dan **(5) Titik Akhir Bawah Touchpad**.
-- **Cooldown Penyimpanan:** Penyimpanan bukti screenshot dan penulisan log CSV dibatasi jeda minimal 5.0 detik (`LOG_COOLDOWN_SEC = 5.0`).
-- **Skor & Status Integritas:** *Trust Score* berawal dari `100%` (minimum `0%`) dengan kategori eskalasi: `AMAN` (`80–100%`), `WASPADA` (`50–79%`), dan `TINJAUAN PENGAWAS` (`< 50%`).
+*Keamanan Kalibrasi 5-Layer Anti-Spoof (`[SPASI]` / `[C]`, durasi `2.0 s`):*
+- Peserta diminta menatap lurus **Lensa Fisik Webcam `(0, 0, 0)`** hanya untuk mengukur offset anatomi *Angle-Kappa* alami serta sudut kemiringan engsel layar ($90^\circ\text{–}115^\circ$).
+- Kalibrasi **DITOLAK OTOMATIS** apabila jarak di luar `25–85 cm`, mata menyipit ($\text{EAR} < 0.16$), pandangan bergoyang tidak stabil, kepala menoleh $> 12^\circ$, atau iris melirik ke luar rentang anatomi lensa (`calib_yaw_offset_deg` terkunci maks $\pm 9.0^\circ$). Batas zona aman fisik `cm` **tidak pernah dapat diperlebar oleh peserta**.
 
 ---
 
 ## 5. Spesifikasi Antarmuka Visual (Dashboard 920x480 Piksel)
 1. **Panel Kamera Utama (Kiri: 640x480 piksel):**
-   - *Bounding Box* Wajah: Biru-Cyan `(255, 200, 0)` untuk Wajah #1 (peserta utama) dan Merah `(0, 0, 255)` untuk wajah tambahan.
-   - Penanda Landmark & Panduan 5 Titik: Titik kuning pada hidung, 2 titik magenta pada pupil Wajah #1, serta panah pemandu arah kalibrasi (`1/5` s/d `5/5`).
-   - *Status Banner* atas dinamis dan baris metrik bawah (`Yaw`, `Pitch`, `EyeX`, `EyeY`).
+   - *Bounding Box* Wajah (`Wajah #1` Biru-Cyan, tambahan Merah), titik kuning hidung, 2 titik magenta pupil, dan panah pemandu ke Lensa Fisik Webcam saat kalibrasi.
+   - *Status Banner* atas dinamis dan HUD bawah berformat sentimeter *real-time* (`X_cm`, `Y_cm` / `Touchpad: xx.x/21cm`, `Z_cm`).
 2. **Panel Monitoring PCD (Kanan: 280x480 piksel):**
-   - Metrik `Trust Score`, `Status` integritas, `Total Indikasi`, `Jumlah Wajah`, `Luminansi (Y)`, serta `Edge ROI/Glob`.
-   - **Grid 2x2 Visualisasi Tahapan PCD ($110\times 110$ piksel):** `1.Gray+CLAHE`, `2.Gauss 5x5`, `3.Otsu Biner`, dan `4.Canny Edge`.
+   - Metrik `Trust Score` (`AMAN` `80–100%`, `WASPADA` `50–79%`, `TINJAUAN PENGAWAS` `< 50%`), `Total Indikasi`, `Jumlah Wajah`, `Luminansi (Y)`, `Edge ROI/Glob`, serta **Grid 2x2 ROI PCD ($110\times 110$)**.
 
 ---
 
 ## 6. Kontrol Pengguna & Skema Bukti Audit
-- **Kontrol Keyboard:** `[SPASI]` atau `[C]` Mulai Kalibrasi 5 Titik Fisik, `[R]` Reset Skor & Timer, `[Q]` Keluar.
+- **Kontrol Keyboard:** `[SPASI]` / `[C]` Kalibrasi Lensa Kamera (Anti-Spoof 2s), `[R]` Reset Skor & Timer, `[Q]` Keluar (`Cooldown` log = `5.0 s`).
 - **Skema `log_indikasi_ujian.csv`:** `Waktu,Kode_Indikasi,Jenis_Perilaku,Durasi_Detik,Mean_Luminance,Trust_Score,File_Bukti`

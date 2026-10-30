@@ -1,4 +1,4 @@
-"""Konfigurasi sistem, Enum kode indikasi/kalibrasi 5 titik, dan Dataclass state pemantauan."""
+"""Konfigurasi sistem, Enum kode indikasi, geometri fisik laptop 3D, & state Anti-Spoof."""
 
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -18,29 +18,10 @@ class IndicationCode(StrEnum):
 
     NORMAL = "NORMAL"
     IND_01 = "IND-01"  # Penyimpangan Horizontal (>1 cm di luar tepi kiri/kanan layar)
-    IND_02 = "IND-02"  # Penyimpangan Vertikal (>1 cm di atas layar / mencapai ujung akhir touchpad)
+    IND_02 = "IND-02"  # Penyimpangan Vertikal (>1 cm di atas bezel / >=21 cm akhir touchpad)
     IND_03 = "IND-03"  # Terdeteksi >1 Orang
     IND_04 = "IND-04"  # Wajah Tidak Terdeteksi
     IND_05 = "IND-05"  # Kamera Tertutup / Gelap / Oklusi Polos
-
-
-class CalibrationStage(StrEnum):
-    """Lima tahapan kalibrasi batas fisik laptop secara berurutan."""
-
-    CENTER = "CENTER"
-    LEFT = "LEFT"
-    RIGHT = "RIGHT"
-    TOP = "TOP"
-    TOUCHPAD = "TOUCHPAD"
-
-
-CALIBRATION_SEQUENCE: tuple[CalibrationStage, ...] = (
-    CalibrationStage.CENTER,
-    CalibrationStage.LEFT,
-    CalibrationStage.RIGHT,
-    CalibrationStage.TOP,
-    CalibrationStage.TOUCHPAD,
-)
 
 
 class BannerState(StrEnum):
@@ -62,18 +43,22 @@ class IntegrityLevel(StrEnum):
 
 
 @dataclass(frozen=True)
-class SafeZoneBounds:
-    """Batas koordinat gabungan kepala + mata (Point-of-Regard) hasil kalibrasi 5 titik fisik."""
+class CalibrationSample:
+    """Satu sampel metrik 3D wajah & iris mentah untuk validasi Anti-Spoof kalibrasi."""
 
-    min_por_x: float  # Batas ~1 cm di luar tepi kiri fisik layar
-    max_por_x: float  # Batas ~1 cm di luar tepi kanan fisik layar
-    min_por_y: float  # Batas ~1 cm di atas bezel atas / webcam
-    max_por_y: float  # Batas tepat di titik akhir bawah touchpad
+    eye_x_cm: float
+    eye_y_cm: float
+    eye_z_cm: float
+    head_yaw_deg: float
+    head_pitch_deg: float
+    gaze_x: float
+    gaze_y: float
+    ear: float
 
 
 @dataclass(frozen=True)
 class DetectorConfig:
-    """Parameter konfigurasi pengolahan citra, geometri Point-of-Regard, EMA, dan aturan temporal."""
+    """Parameter pipeline PCD, geometri fisik 3D laptop (Lenovo Slim 5 14"), & Anti-Spoof."""
 
     frame_width: int = 640
     frame_height: int = 480
@@ -88,31 +73,47 @@ class DetectorConfig:
     min_luminance: float = 35.0
     min_global_edge_density: float = 1.0
 
-    # Parameter Geometri Kepala + Iris Unified Point-of-Regard (POR)
+    # Geometri Fisik Terkunci — Lenovo IdeaPad Slim 5 14IMH9 (14.0" 16:10 + 21 cm Touchpad)
+    # Origin (0, 0, 0) berada tepat pada Lensa Fisik Webcam di tengah bezel atas layar.
+    screen_width_cm: float = 30.16
+    screen_height_cm: float = 18.85
+    hinge_y_cm: float = 20.20
+    touchpad_end_depth_cm: float = 21.00
+    edge_margin_cm: float = 1.00
+
+    # Parameter MediaPipe 3D Pose, Iris Socket Angular Gain, & EMA
     max_num_faces: int = 3
     min_detection_confidence: float = 0.6
     min_presence_confidence: float = 0.6
     min_tracking_confidence: float = 0.6
-    ema_alpha: float = 0.45
-    yaw_to_gaze_gain: float = 0.55
-    pitch_to_gaze_gain: float = 0.85
-    head_label_yaw_delta: float = 0.12
-    head_label_pitch_delta: float = 0.08
-    min_ear_for_gaze: float = 0.09
+    camera_fov_deg: float = 65.0
+    avg_face_width_cm: float = 14.8
+    ema_alpha: float = 0.42
+    neutral_gaze_x: float = 0.520
+    neutral_gaze_y: float = -0.130
+    eye_yaw_gain_deg: float = 500.0
+    eye_pitch_up_gain_deg: float = 300.0
+    eye_pitch_down_gain_deg: float = 380.0
+    head_label_yaw_deg: float = 10.0
+    head_label_pitch_deg: float = 9.0
+    min_ear_for_gaze: float = 0.12
 
-    # Fallback default apabila menggunakan kalibrasi 1 titik pada unit test
-    tol_yaw: float = 0.15
-    tol_pitch: float = 0.10
-    tol_gaze_x: float = 0.11
-    tol_gaze_up: float = 0.08
-    tol_gaze_down: float = 0.11
-
-    # Parameter Kalibrasi 5 Titik Batas Fisik (~1 cm luar layar & tepat akhir touchpad)
-    calibration_stage_sec: float = 2.0
+    # Parameter Kalibrasi 1-Titik Lensa Kamera & 5-Layer Anti-Spoof Gate
+    calibration_duration_sec: float = 2.0
     calibration_sample_window_sec: float = 0.8
-    screen_edge_margin_ratio_x: float = 0.06  # ~1 cm pada setengah lebar layar ~17 cm
-    screen_edge_margin_ratio_top: float = 0.10  # ~1 cm pada jarak tengah-ke-atas ~10 cm
-    touchpad_end_offset: float = -0.002  # Langsung kuning tepat di titik akhir touchpad
+    min_calib_distance_cm: float = 25.0
+    max_calib_distance_cm: float = 85.0
+    min_calib_ear: float = 0.16
+    min_calib_gaze_y: float = -0.180
+    max_calib_gaze_y: float = -0.080
+    max_calib_head_yaw_error_deg: float = 12.0
+    min_calib_head_pitch_error_deg: float = -24.0  # Mengizinkan kemiringan engsel layar 90-115 deg
+    max_calib_head_pitch_error_deg: float = 12.0
+    max_calib_offset_yaw_deg: float = 9.0
+    min_calib_offset_pitch_deg: float = -12.0
+    max_calib_offset_pitch_deg: float = 24.0
+    max_calib_std_yaw_deg: float = 3.5
+    max_calib_std_gaze_x: float = 0.025
 
     # Parameter Temporal (Detik) & Penilaian Trust Score
     thresh_yaw_sec: float = 2.5
@@ -131,6 +132,11 @@ class DetectorConfig:
     evidence_dir: Path = DEFAULT_EVIDENCE_DIR
     log_file: Path = DEFAULT_LOG_FILE
 
+    @property
+    def half_safe_width_cm(self) -> float:
+        """Setengah lebar zona aman horizontal (setengah lebar layar + 1.0 cm)."""
+        return (self.screen_width_cm * 0.5) + self.edge_margin_cm
+
     def threshold_for(self, code: IndicationCode, behavior_label: str = "") -> float:
         """Mengembalikan ambang durasi (detik) berdasarkan kode dan subtipe perilaku."""
         if "MELIRIK" in behavior_label:
@@ -148,24 +154,15 @@ class DetectorConfig:
 
 @dataclass
 class MonitoringState:
-    """State dinamis sesi pemantauan peserta termasuk kalibrasi 5 titik & batas SafeZoneBounds."""
+    """State dinamis sesi pemantauan dengan koreksi anatomi Lensa Kamera Anti-Spoof."""
 
-    baseline_yaw: float = 0.50
-    baseline_pitch: float = 0.35
-    baseline_gaze_x: float = 0.50
-    baseline_gaze_y: float = -0.11
-    safe_bounds: SafeZoneBounds | None = None
-    smoothed_yaw: float | None = None
-    smoothed_pitch: float | None = None
-    smoothed_gaze_x: float | None = None
-    smoothed_gaze_y: float | None = None
+    calib_yaw_offset_deg: float = 0.0
+    calib_pitch_offset_deg: float = 0.0
+    smoothed_pose: tuple[float, float, float, float, float, float, float] | None = None
     is_calibrated: bool = False
-    calibration_stage_idx: int | None = None
     calibration_deadline: float | None = None
-    calibration_samples: list[tuple[float, float, float, float]] = field(default_factory=list)
-    stage_averages: dict[CalibrationStage, tuple[float, float, float, float]] = field(
-        default_factory=dict
-    )
+    calibration_samples: list[CalibrationSample] = field(default_factory=list)
+    last_calibration_error: str | None = None
     trust_score: float = 100.0
     total_flags: int = 0
     active_code: IndicationCode = IndicationCode.NORMAL
@@ -176,112 +173,70 @@ class MonitoringState:
 
     @property
     def is_calibrating(self) -> bool:
-        """Bernilai True apabila sedang dalam proses kalibrasi 5 titik."""
-        return self.calibration_stage_idx is not None and self.calibration_deadline is not None
+        """Bernilai True apabila sedang dalam hitung mundur kalibrasi lensa kamera."""
+        return self.calibration_deadline is not None
 
-    @property
-    def current_calibration_stage(self) -> CalibrationStage | None:
-        """Mengembalikan tahapan kalibrasi aktif saat ini (CENTER/LEFT/RIGHT/TOP/TOUCHPAD)."""
-        if self.calibration_stage_idx is None:
-            return None
-        if 0 <= self.calibration_stage_idx < len(CALIBRATION_SEQUENCE):
-            return CALIBRATION_SEQUENCE[self.calibration_stage_idx]
-        return None
-
-    def start_five_point_calibration(self, now_monotonic: float, stage_sec: float) -> None:
-        """Memulai rangkaian kalibrasi 5 titik fisik dari tahap pertama (CENTER)."""
-        self.calibration_stage_idx = 0
-        self.calibration_deadline = now_monotonic + stage_sec
+    def start_lens_calibration(self, now_monotonic: float, duration_sec: float) -> None:
+        """Memulai kalibrasi 1 titik menatap lensa fisik webcam (Anti-Spoof)."""
+        self.calibration_deadline = now_monotonic + duration_sec
         self.calibration_samples.clear()
-        self.stage_averages.clear()
+        self.last_calibration_error = None
         self.clear_active_behavior()
 
-    def cancel_calibration(self) -> None:
-        """Membatalkan proses kalibrasi apabila wajah hilang atau >1 orang."""
-        self.calibration_stage_idx = None
+    def cancel_calibration(self, error_message: str | None = None) -> None:
+        """Membatalkan atau menolak kalibrasi tanpa mengaktifkan sesi pemantauan."""
         self.calibration_deadline = None
         self.calibration_samples.clear()
-        self.stage_averages.clear()
+        self.last_calibration_error = error_message
 
-    def update_ema(
+    def apply_lens_calibration(
         self,
-        yaw: float,
-        pitch: float,
-        gaze_x: float,
-        gaze_y: float,
-        alpha: float,
-    ) -> tuple[float, float, float, float]:
-        """Menghaluskan sinyal geometri kepala dan iris menggunakan Exponential Moving Average."""
-        if (
-            self.smoothed_yaw is None
-            or self.smoothed_pitch is None
-            or self.smoothed_gaze_x is None
-            or self.smoothed_gaze_y is None
-        ):
-            self.smoothed_yaw = yaw
-            self.smoothed_pitch = pitch
-            self.smoothed_gaze_x = gaze_x
-            self.smoothed_gaze_y = gaze_y
-        else:
-            inv = 1.0 - alpha
-            self.smoothed_yaw = alpha * yaw + inv * self.smoothed_yaw
-            self.smoothed_pitch = alpha * pitch + inv * self.smoothed_pitch
-            self.smoothed_gaze_x = alpha * gaze_x + inv * self.smoothed_gaze_x
-            self.smoothed_gaze_y = alpha * gaze_y + inv * self.smoothed_gaze_y
-
-        return (
-            self.smoothed_yaw,
-            self.smoothed_pitch,
-            self.smoothed_gaze_x,
-            self.smoothed_gaze_y,
-        )
-
-    def reset_ema(self) -> None:
-        """Mereset riwayat filter EMA saat wajah hilang dari frame."""
-        self.smoothed_yaw = None
-        self.smoothed_pitch = None
-        self.smoothed_gaze_x = None
-        self.smoothed_gaze_y = None
-
-    def apply_calibrated_bounds(
-        self,
-        yaw: float,
-        pitch: float,
-        gaze_x: float,
-        gaze_y: float,
-        bounds: SafeZoneBounds,
+        yaw_offset_deg: float,
+        pitch_offset_deg: float,
+        config: DetectorConfig | None = None,
     ) -> None:
-        """Menyimpan titik tengah dan batas zona aman 4 sisi hasil kalibrasi 5 titik."""
-        self.baseline_yaw = yaw
-        self.baseline_pitch = pitch
-        self.baseline_gaze_x = gaze_x
-        self.baseline_gaze_y = gaze_y
-        self.safe_bounds = bounds
-        self.smoothed_yaw = yaw
-        self.smoothed_pitch = pitch
-        self.smoothed_gaze_x = gaze_x
-        self.smoothed_gaze_y = gaze_y
-        self.cancel_calibration()
+        """Menyimpan koreksi sudut anatomi mata tervalidasi (terkunci dalam batas Anti-Spoof)."""
+        cfg = config or DetectorConfig()
+        self.calib_yaw_offset_deg = max(
+            -cfg.max_calib_offset_yaw_deg,
+            min(cfg.max_calib_offset_yaw_deg, yaw_offset_deg),
+        )
+        self.calib_pitch_offset_deg = max(
+            cfg.min_calib_offset_pitch_deg,
+            min(cfg.max_calib_offset_pitch_deg, pitch_offset_deg),
+        )
+        self.calibration_deadline = None
+        self.calibration_samples.clear()
+        self.last_calibration_error = None
         self.is_calibrated = True
         self.clear_active_behavior()
 
-    def calibrate(
+    def update_ema_pose(
         self,
-        yaw: float,
-        pitch: float,
-        gaze_x: float = 0.50,
-        gaze_y: float = -0.11,
-        config: DetectorConfig | None = None,
-    ) -> None:
-        """Kalibrasi langsung 1 titik (membentuk batas default simetris di sekitar titik acuan)."""
-        cfg = config or DetectorConfig()
-        bounds = SafeZoneBounds(
-            min_por_x=gaze_x - cfg.tol_gaze_x,
-            max_por_x=gaze_x + cfg.tol_gaze_x,
-            min_por_y=gaze_y - cfg.tol_gaze_up,
-            max_por_y=gaze_y + cfg.tol_gaze_down,
+        raw_pose: tuple[float, float, float, float, float, float, float],
+        alpha: float,
+    ) -> tuple[float, float, float, float, float, float, float]:
+        """Menghaluskan 7 sinyal geometri 3D wajah & iris dengan Exponential Moving Average."""
+        if self.smoothed_pose is None:
+            self.smoothed_pose = raw_pose
+            return raw_pose
+
+        inv = 1.0 - alpha
+        smoothed = (
+            alpha * raw_pose[0] + inv * self.smoothed_pose[0],
+            alpha * raw_pose[1] + inv * self.smoothed_pose[1],
+            alpha * raw_pose[2] + inv * self.smoothed_pose[2],
+            alpha * raw_pose[3] + inv * self.smoothed_pose[3],
+            alpha * raw_pose[4] + inv * self.smoothed_pose[4],
+            alpha * raw_pose[5] + inv * self.smoothed_pose[5],
+            alpha * raw_pose[6] + inv * self.smoothed_pose[6],
         )
-        self.apply_calibrated_bounds(yaw, pitch, gaze_x, gaze_y, bounds)
+        self.smoothed_pose = smoothed
+        return smoothed
+
+    def reset_ema(self) -> None:
+        """Mereset riwayat filter EMA saat wajah hilang dari frame."""
+        self.smoothed_pose = None
 
     def clear_active_behavior(self) -> None:
         """Mereset status perilaku mencurigakan kembali ke kondisi NORMAL."""

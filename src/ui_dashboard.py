@@ -1,4 +1,4 @@
-"""Rendering antarmuka visual OpenCV Dashboard (920x480), panduan 5 titik kalibrasi, & Grid 2x2 PCD."""
+"""Rendering OpenCV Dashboard (920x480), panduan Lensa Anti-Spoof, HUD 3D (cm), & Grid 2x2 PCD."""
 
 from collections.abc import Sequence
 
@@ -8,12 +8,12 @@ from numpy.typing import NDArray
 
 from src.config import (
     BannerState,
-    CalibrationStage,
+    DetectorConfig,
     IntegrityLevel,
     MonitoringState,
     resolve_integrity_level,
 )
-from src.detector import DetectedFace, TemporalStepResult
+from src.detector import DetectedFace, TemporalStepResult, project_gaze_3d
 from src.pcd_pipeline import FramePreprocessResult, ROIPCDResult
 
 UInt8Image = NDArray[np.uint8]
@@ -52,88 +52,48 @@ def render_dashboard(
     frame_pcd: FramePreprocessResult,
     roi_pcd: ROIPCDResult,
     min_luminance: float,
+    config: DetectorConfig | None = None,
 ) -> UInt8Image:
     """Merender keseluruhan kanvas dashboard 920x480 piksel (Panel Kamera + Panel PCD 2x2)."""
+    cfg = config or DetectorConfig(min_luminance=min_luminance)
     dashboard = np.zeros((DASHBOARD_HEIGHT, DASHBOARD_WIDTH, 3), dtype=np.uint8)
     dashboard[:, :CAMERA_PANEL_WIDTH] = raw_frame_bgr
     dashboard[:, CAMERA_PANEL_WIDTH:] = COLOR_PANEL_BG
 
     _draw_face_overlays(dashboard, faces)
     if step_result.banner_state == BannerState.CALIBRATING:
-        _draw_five_point_guide(dashboard, state.current_calibration_stage)
-    _draw_camera_banner_and_footer(dashboard, faces, state, step_result)
+        _draw_lens_calibration_guide(dashboard)
+    _draw_camera_banner_and_footer(dashboard, faces, state, step_result, cfg)
     _draw_pcd_side_panel(dashboard, len(faces), state, frame_pcd, roi_pcd, min_luminance)
 
     return dashboard
 
 
-def _draw_five_point_guide(dashboard: UInt8Image, stage: CalibrationStage | None) -> None:
-    """Menggambar penanda visual arah pandang fisik selama proses kalibrasi 5 titik."""
-    cx, cy = CAMERA_PANEL_WIDTH // 2, DASHBOARD_HEIGHT // 2
+def _draw_lens_calibration_guide(dashboard: UInt8Image) -> None:
+    """Menggambar penanda visual arah ke Lensa Fisik Webcam di bezel atas saat kalibrasi."""
+    cx = CAMERA_PANEL_WIDTH // 2
     guide_color = (0, 255, 255)
 
-    if stage == CalibrationStage.CENTER or stage is None:
-        cv2.circle(dashboard, (cx, cy), 20, guide_color, 2)
-        cv2.circle(dashboard, (cx, cy), 5, (0, 0, 255), -1)
-        return
-
-    if stage == CalibrationStage.LEFT:
-        cv2.arrowedLine(dashboard, (140, cy), (20, cy), guide_color, 4, tipLength=0.35)
-        cv2.putText(
-            dashboard,
-            "LIHAT BINGKAI KIRI FISIK LAYAR",
-            (25, cy - 22),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            guide_color,
-            2,
-        )
-        return
-
-    if stage == CalibrationStage.RIGHT:
-        cv2.arrowedLine(
-            dashboard,
-            (CAMERA_PANEL_WIDTH - 140, cy),
-            (CAMERA_PANEL_WIDTH - 20, cy),
-            guide_color,
-            4,
-            tipLength=0.35,
-        )
-        cv2.putText(
-            dashboard,
-            "LIHAT BINGKAI KANAN FISIK LAYAR",
-            (CAMERA_PANEL_WIDTH - 335, cy - 22),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            guide_color,
-            2,
-        )
-        return
-
-    if stage == CalibrationStage.TOP:
-        cv2.arrowedLine(dashboard, (cx, 145), (cx, 50), guide_color, 4, tipLength=0.35)
-        cv2.putText(
-            dashboard,
-            "LIHAT BEZEL ATAS / LENSA KAMERA",
-            (cx - 160, 175),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            guide_color,
-            2,
-        )
-        return
-
-    if stage == CalibrationStage.TOUCHPAD:
-        cv2.arrowedLine(dashboard, (cx, 330), (cx, 435), guide_color, 4, tipLength=0.35)
-        cv2.putText(
-            dashboard,
-            "LIHAT TITIK AKHIR TOUCHPAD (TUNGGU BEEP)",
-            (cx - 205, 312),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.54,
-            guide_color,
-            2,
-        )
+    cv2.arrowedLine(dashboard, (cx, 135), (cx, 48), guide_color, 4, tipLength=0.35)
+    cv2.circle(dashboard, (cx, 48), 9, (0, 0, 255), 2)
+    cv2.putText(
+        dashboard,
+        "TATAP LURUS LENSA FISIK KAMERA DI BEZEL ATAS",
+        (cx - 215, 165),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.52,
+        guide_color,
+        2,
+    )
+    cv2.putText(
+        dashboard,
+        "Anti-Spoof Aktif: Lirikan/Tolehan Palsu Akan Ditolak",
+        (cx - 205, 190),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.44,
+        (255, 220, 255),
+        1,
+    )
 
 
 def _draw_face_overlays(dashboard: UInt8Image, faces: Sequence[DetectedFace]) -> None:
@@ -162,27 +122,33 @@ def _draw_camera_banner_and_footer(
     faces: Sequence[DetectedFace],
     state: MonitoringState,
     step_result: TemporalStepResult,
+    config: DetectorConfig,
 ) -> None:
-    """Menggambar status banner atas dan informasi kalibrasi/geometri kepala & mata di bawah."""
+    """Menggambar banner atas dan HUD koordinat pandang 3D (cm) real-time di bawah."""
     banner_color = BANNER_COLORS[step_result.banner_state]
+    if (
+        step_result.banner_state == BannerState.UNCALIBRATED
+        and state.last_calibration_error is not None
+    ):
+        banner_color = (0, 65, 210)
+
     cv2.rectangle(dashboard, (0, 0), (CAMERA_PANEL_WIDTH, 40), banner_color, -1)
     cv2.putText(
         dashboard,
         step_result.banner_text,
         (12, 27),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
+        0.46,
         (255, 255, 255),
         2,
     )
 
     cv2.rectangle(dashboard, (0, 450), (CAMERA_PANEL_WIDTH, 480), (20, 20, 20), -1)
     if state.is_calibrating:
-        stage_num = (state.calibration_stage_idx or 0) + 1
-        cal_text = f"KALIBRASI TAHAP {stage_num}/5..."
+        cal_text = "VALIDASI LENSA..."
         cal_color = (255, 180, 255)
     elif state.is_calibrated:
-        cal_text = "5-TITIK AKTIF [SPASI/C Ulang]"
+        cal_text = "3D LOCKED [SPASI/C]"
         cal_color = (100, 255, 100)
     else:
         cal_text = "BELUM KALIBRASI [SPASI/C]"
@@ -193,21 +159,40 @@ def _draw_camera_banner_and_footer(
         cal_text,
         (10, 470),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.43,
+        0.42,
         cal_color,
         1,
     )
 
-    yaw = faces[0].yaw if faces else state.baseline_yaw
-    pitch = faces[0].pitch if faces else state.baseline_pitch
-    gaze_x = faces[0].gaze_x if faces else state.baseline_gaze_x
-    gaze_y = faces[0].gaze_y if faces else state.baseline_gaze_y
+    if faces:
+        primary = faces[0]
+        hit = project_gaze_3d(
+            primary,
+            config,
+            calib_yaw_offset_deg=state.calib_yaw_offset_deg,
+            calib_pitch_offset_deg=state.calib_pitch_offset_deg,
+        )
+        if hit.on_keyboard_deck:
+            hud_text = (
+                f"X:{hit.hit_x_cm:+5.1f}cm | "
+                f"Touchpad:{hit.deck_z_cm:4.1f}/{config.touchpad_end_depth_cm:.0f}cm | "
+                f"Z:{primary.eye_z_cm:.0f}cm"
+            )
+        else:
+            hud_text = (
+                f"X:{hit.hit_x_cm:+5.1f}cm | "
+                f"Y:{hit.screen_y_cm:+5.1f}cm | "
+                f"Z:{primary.eye_z_cm:.0f}cm"
+            )
+    else:
+        hud_text = "X:  -- cm | Y:  -- cm | Z: -- cm"
+
     cv2.putText(
         dashboard,
-        f"Y:{yaw:.2f} P:{pitch:.2f} | EyeX:{gaze_x:.2f} EyeY:{gaze_y:+.2f}",
-        (275, 470),
+        hud_text,
+        (242, 470),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.43,
+        0.42,
         (200, 255, 200),
         1,
     )

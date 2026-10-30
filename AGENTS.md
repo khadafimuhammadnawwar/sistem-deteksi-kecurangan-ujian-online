@@ -31,22 +31,23 @@ Setiap dokumen memiliki satu peran tegas tanpa duplikasi tabel ambang batas:
 4. `README.md` — Panduan penggunaan manusia & matriks pengujian laporan praktikum (`UJI-01` s/d `UJI-09`).
 
 ```text
+├── .agent/skills/3d-gaze-proctoring/SKILL.md # Skill 3D Gaze Ray-Casting & Anti-Spoof
 ├── AGENTS.md                  # Aturan spesifik workspace untuk Antigravity AI Agent
-├── PRD.md                     # Spesifikasi produk, rumus PCD + VOR, dan matriks aturan
-├── ARCHITECTURE.md            # Desain berlapis, invariants, state machine, & kontrak SRP
+├── PRD.md                     # Spesifikasi produk, rumus PCD + 3D Ray-Casting, & matriks aturan
+├── ARCHITECTURE.md            # Desain berlapis, invariants Anti-Spoof, state machine, & SRP
 ├── README.md                  # Cara menjalankan & protokol pengujian laporan praktikum
 ├── requirements.txt           # Dependensi Python terkunci
 ├── .gitignore                 # Abaikan venv, cache, model biner, dan output runtime
 ├── main.py                    # Entry point utama akuisisi webcam & koordinasi loop
 ├── src/
 │   ├── __init__.py
-│   ├── config.py              # Konstanta ambang batas, StrEnum Indikasi, dan Dataclass State
+│   ├── config.py              # Konstanta geometri fisik laptop (cm), StrEnum, & State Anti-Spoof
 │   ├── pcd_pipeline.py        # Fungsi murni Pengolahan Citra Digital (LAB-CLAHE, Gaussian, Otsu, Canny)
-│   ├── detector.py            # Wrapper FaceLandmarker, geometri Kepala + Iris VOR, & aturan temporal
+│   ├── detector.py            # FaceLandmarker 3D Matrix, L-Shaped Ray-Casting, & aturan temporal
 │   ├── logger.py              # Pencatatan bukti screenshot (.jpg) dan append log (.csv)
-│   └── ui_dashboard.py        # Rendering canvas OpenCV (920x480), target kalibrasi, & Grid 2x2 PCD
+│   └── ui_dashboard.py        # Rendering canvas OpenCV (920x480), HUD 3D (cm), & Grid 2x2 PCD
 └── tests/
-    └── test_detector_logic.py # Unit testing otomatis untuk PCD, geometri, VOR, kalibrasi, dan logger
+    └── test_detector_logic.py # Unit testing otomatis PCD, 3D Ray-Casting, Anti-Spoof, & logger
 ```
 
 ## 5. PERINTAH VERIFIKASI WAJIB SEBELUM COMMIT

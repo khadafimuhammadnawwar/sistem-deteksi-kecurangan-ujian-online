@@ -1,8 +1,9 @@
-"""Unit test untuk pipeline PCD, kalibrasi 5 titik fisik, proyeksi gabungan POR, EMA, UI, dan logger."""
+"""Unit test untuk PCD, 3D Hardware-Locked Ray-Casting (1cm/21cm), 5-Layer Anti-Spoof, UI, & CSV."""
 
 import csv
 from dataclasses import dataclass
 from datetime import datetime
+import math
 from pathlib import Path
 
 import cv2
@@ -11,7 +12,6 @@ import pytest
 
 from src.config import (
     BannerState,
-    CalibrationStage,
     DetectorConfig,
     IndicationCode,
     IntegrityLevel,
@@ -34,11 +34,11 @@ from src.detector import (
     R_IRIS_CENTER_IDX,
     RIGHT_CHEEK_IDX,
     DetectedFace,
-    advance_five_point_calibration,
+    advance_lens_calibration,
     calculate_iris_gaze_and_ear,
-    calculate_yaw_pitch,
     evaluate_instant_indication,
     extract_faces_sorted_by_area,
+    project_gaze_3d,
     smooth_primary_face_pose,
     step_temporal_monitor,
 )
@@ -58,13 +58,13 @@ class DummyLandmark:
 def _build_synthetic_landmarks(
     center_x: float = 0.50,
     center_y: float = 0.50,
-    half_w: float = 0.10,
-    half_h: float = 0.15,
+    half_w: float = 0.12,
+    half_h: float = 0.16,
     nose_x_offset: float = 0.0,
     nose_y_ratio: float = 0.35,
-    iris_x_ratio: float = 0.50,
-    iris_y_offset_ratio: float = -0.11,
-    ear_ratio: float = 0.28,
+    iris_x_ratio: float = 0.520,
+    iris_y_offset_ratio: float = -0.130,
+    ear_ratio: float = 0.30,
 ) -> list[DummyLandmark]:
     """Membangun 478 titik landmark sintetis mencakup mata & pusat iris."""
     points = [DummyLandmark(x=center_x, y=center_y) for _ in range(478)]
@@ -109,22 +109,28 @@ def _build_synthetic_landmarks(
     return points
 
 
-def _make_face(
-    yaw: float = 0.50,
-    pitch: float = 0.35,
-    gaze_x: float = 0.50,
-    gaze_y: float = -0.11,
-    ear: float = 0.28,
-    area: int = 12_000,
+def _make_face_3d(
+    eye_x_cm: float = 0.0,
+    eye_y_cm: float = 0.5,
+    eye_z_cm: float = 42.0,
+    head_yaw_deg: float = 0.0,
+    head_pitch_deg: float = 0.0,
+    gaze_x: float = 0.520,
+    gaze_y: float = -0.130,
+    ear: float = 0.32,
+    area: int = 14_000,
 ) -> DetectedFace:
-    """Membuat objek DetectedFace untuk pengujian matriks aturan kepala & mata."""
+    """Membuat objek DetectedFace metrik 3D untuk pengujian presisi sentimeter."""
     return DetectedFace(
-        bbox=(200, 120, 320, 220),
-        nose_px=(260, 170),
-        iris_px=((240, 150), (280, 150)),
+        bbox=(200, 120, 340, 220),
+        nose_px=(270, 170),
+        iris_px=((245, 150), (295, 150)),
         area=area,
-        yaw=yaw,
-        pitch=pitch,
+        eye_x_cm=eye_x_cm,
+        eye_y_cm=eye_y_cm,
+        eye_z_cm=eye_z_cm,
+        head_yaw_deg=head_yaw_deg,
+        head_pitch_deg=head_pitch_deg,
         gaze_x=gaze_x,
         gaze_y=gaze_y,
         ear=ear,
@@ -174,267 +180,277 @@ def test_pcd_roi_panel_outputs_four_stages_and_handles_empty_roi() -> None:
     assert unique_otsu.issubset({0, 255})
 
 
-def test_yaw_pitch_iris_calculation_and_largest_face_sorting() -> None:
-    """Wajah peserta utama harus di indeks 0 dan rasio iris dihitung presisi."""
-    small_bg_face = _build_synthetic_landmarks(
-        center_x=0.20, center_y=0.30, half_w=0.04, half_h=0.05, nose_x_offset=-0.02
-    )
+def test_3d_matrix_extraction_and_largest_face_sorting() -> None:
+    """Mengekstrak matriks 4x4 MediaPipe ke cm/derajat akurat & mengurutkan Wajah #1 terbesar."""
+    small_bg_face = _build_synthetic_landmarks(center_x=0.20, center_y=0.30, half_w=0.04, half_h=0.05)
     large_main_face = _build_synthetic_landmarks(
         center_x=0.50,
         center_y=0.50,
         half_w=0.15,
         half_h=0.20,
-        nose_x_offset=0.0,
-        nose_y_ratio=0.35,
-        iris_x_ratio=0.65,
-        iris_y_offset_ratio=-0.08,
-        ear_ratio=0.30,
+        iris_x_ratio=0.545,
+        iris_y_offset_ratio=-0.115,
+        ear_ratio=0.34,
     )
-
-    yaw, pitch = calculate_yaw_pitch(large_main_face)
     gaze_x, gaze_y, ear = calculate_iris_gaze_and_ear(large_main_face)
-    assert yaw == pytest.approx(0.50, abs=1e-3)
-    assert pitch == pytest.approx(0.35, abs=1e-3)
-    assert gaze_x == pytest.approx(0.65, abs=1e-3)
-    assert gaze_y == pytest.approx(-0.08, abs=1e-3)
-    assert ear == pytest.approx(0.30, abs=1e-3)
+    assert gaze_x == pytest.approx(0.545, abs=1e-3)
+    assert gaze_y == pytest.approx(-0.115, abs=1e-3)
+    assert ear == pytest.approx(0.34, abs=1e-3)
 
-    sorted_faces = extract_faces_sorted_by_area([small_bg_face, large_main_face], 640, 480)
+    yaw_rad = math.radians(15.0)
+    mat_main = np.eye(4, dtype=np.float64)
+    mat_main[0, 2] = math.sin(yaw_rad)
+    mat_main[2, 2] = math.cos(yaw_rad)
+    mat_main[0, 3] = 2.5
+    mat_main[1, 3] = -1.2
+    mat_main[2, 3] = -44.0
+
+    mat_bg = np.eye(4, dtype=np.float64)
+    mat_bg[2, 3] = -80.0
+
+    sorted_faces = extract_faces_sorted_by_area(
+        [small_bg_face, large_main_face],
+        640,
+        480,
+        transformation_matrices=[mat_bg, mat_main],
+    )
     assert len(sorted_faces) == 2
-    assert sorted_faces[0].area > sorted_faces[1].area
+    primary = sorted_faces[0]
+    assert primary.area > sorted_faces[1].area
+    assert primary.eye_x_cm == pytest.approx(2.5)
+    assert primary.eye_y_cm == pytest.approx(1.2)
+    assert primary.eye_z_cm == pytest.approx(44.0)
+    assert primary.head_yaw_deg == pytest.approx(15.0, abs=1e-2)
 
 
-def test_five_point_asymmetric_calibration_and_1cm_precision() -> None:
+def test_hardware_locked_3d_ray_casting_1cm_screen_and_21cm_touchpad() -> None:
     """
-    Menguji kalibrasi 5 titik asimetris penuh (CENTER -> LEFT -> RIGHT -> TOP -> TOUCHPAD):
-    - Area layar & keyboard tetap NORMAL (Hijau).
-    - Lewat ~1 cm di kiri, kanan, atas layar (baik mata saja maupun kepala) langsung terdeteksi.
-    - Tepat di titik akhir bawah touchpad langsung terdeteksi IND-02.
+    Memverifikasi geometri fisik terkunci Lenovo IdeaPad Slim 5 14IMH9:
+    - Seluruh layar (30.16 x 18.85 cm) + keyboard s/d <21.0 cm touchpad -> NORMAL (Hijau).
+    - >1.0 cm di luar Kiri (-16.08 cm) dan Kanan (+16.08 cm) -> IND-01 secara simetris.
+    - >1.0 cm di atas bezel kamera (Y < -1.0 cm) -> IND-02.
+    - Tepat/lewat titik akhir touchpad (deck_z >= 21.0 cm) -> IND-02.
     """
-    cfg = DetectorConfig()
-    state = MonitoringState()
-    state.start_five_point_calibration(now_monotonic=0.0, stage_sec=2.0)
+    cfg = DetectorConfig()  # half_safe_width_cm = 16.08 cm, touchpad_end_depth_cm = 21.0 cm
 
-    # Simulasi 5 titik batas fisik asimetris (misal posisi duduk agak ke kanan dari tengah kamera)
-    stage_inputs: list[tuple[CalibrationStage, DetectedFace]] = [
-        (CalibrationStage.CENTER, _make_face(yaw=0.52, pitch=0.34, gaze_x=0.53, gaze_y=-0.12)),
-        (CalibrationStage.LEFT, _make_face(yaw=0.50, pitch=0.34, gaze_x=0.45, gaze_y=-0.12)),
-        (CalibrationStage.RIGHT, _make_face(yaw=0.54, pitch=0.34, gaze_x=0.62, gaze_y=-0.12)),
-        (CalibrationStage.TOP, _make_face(yaw=0.52, pitch=0.32, gaze_x=0.53, gaze_y=-0.16)),
-        (CalibrationStage.TOUCHPAD, _make_face(yaw=0.52, pitch=0.38, gaze_x=0.53, gaze_y=-0.02, ear=0.22)),
+    # 1. Di dalam layar (Tengah, Tepi Kiri -14.8 cm, Tepi Kanan +14.8 cm) & Keyboard (12 cm) -> NORMAL
+    safe_faces = [
+        _make_face_3d(head_pitch_deg=12.0),  # Tengah layar (Y ~ +9.4 cm)
+        _make_face_3d(gaze_x=0.520 - (19.0 / 500.0), head_pitch_deg=10.0),  # Tepi dalam kiri (-14.5 cm)
+        _make_face_3d(gaze_x=0.520 + (19.0 / 500.0), head_pitch_deg=10.0),  # Tepi dalam kanan (+14.5 cm)
+        _make_face_3d(head_pitch_deg=5.0, gaze_y=-0.130 + (26.0 / 380.0)),  # Tengah keyboard (~10 cm)
+        _make_face_3d(head_pitch_deg=6.0, gaze_y=-0.130 + (34.0 / 380.0)),  # Dalam touchpad (~19.5 cm)
     ]
-
-    t = 0.0
-    last_step = None
-    for idx, (expected_stage, sample_face) in enumerate(stage_inputs):
-        assert state.current_calibration_stage == expected_stage
-        # Sampel awal (sebelum 0.8s terakhir) diabaikan
-        advance_five_point_calibration(state, [sample_face], t + 0.5, cfg)
-        # Sampel stabil pada 0.8s terakhir dikoleksi
-        advance_five_point_calibration(state, [sample_face], t + 1.5, cfg)
-        t += 2.05
-        last_step = advance_five_point_calibration(state, [sample_face], t, cfg)
-        if idx < 4:
-            assert last_step is not None and last_step.calibration_event == "NEXT_STAGE"
-
-    assert last_step is not None and last_step.calibration_event == "COMPLETED"
-    assert state.is_calibrated is True
-    assert state.safe_bounds is not None
-
-    # 1. Di dalam layar (tengah, dekat tepi kiri, dekat tepi kanan, keyboard tengah) -> NORMAL (Hijau)
-    inside_samples = [
-        _make_face(yaw=0.52, pitch=0.34, gaze_x=0.53, gaze_y=-0.12),  # Tengah layar
-        _make_face(yaw=0.50, pitch=0.34, gaze_x=0.452, gaze_y=-0.12),  # Tepi dalam kiri layar
-        _make_face(yaw=0.54, pitch=0.34, gaze_x=0.618, gaze_y=-0.12),  # Tepi dalam kanan layar
-        _make_face(yaw=0.52, pitch=0.36, gaze_x=0.53, gaze_y=-0.06, ear=0.28),  # Area keyboard
-    ]
-    for sample in inside_samples:
-        code, _ = evaluate_instant_indication(
-            200.0,
-            4.0,
-            [sample],
-            state.baseline_yaw,
-            state.baseline_pitch,
-            cfg,
-            state.baseline_gaze_x,
-            state.baseline_gaze_y,
-            state.safe_bounds,
-        )
+    for f_ok in safe_faces:
+        code, _ = evaluate_instant_indication(180.0, 5.0, [f_ok], cfg)
         assert code == IndicationCode.NORMAL
 
-    # 2. Keluar ~1 cm di KIRI layar (bola mata saja maupun kepala saja) -> IND-01
-    c_eye_left, l_eye_left = evaluate_instant_indication(
-        200.0, 4.0, [_make_face(yaw=0.52, pitch=0.34, gaze_x=0.425, gaze_y=-0.12)],
-        state.baseline_yaw, state.baseline_pitch, cfg, state.baseline_gaze_x, state.baseline_gaze_y, state.safe_bounds
+    # 2. >1 cm di luar KIRI layar (X < -16.08 cm): baik lirikan mata maupun tolehan kepala
+    f_eye_left = _make_face_3d(gaze_x=0.520 - (22.0 / 500.0))  # X_hit ~ -17.0 cm
+    f_head_left = _make_face_3d(head_yaw_deg=-22.0)
+    c_el, l_el = evaluate_instant_indication(180.0, 5.0, [f_eye_left], cfg)
+    c_hl, l_hl = evaluate_instant_indication(180.0, 5.0, [f_head_left], cfg)
+    assert c_el == IndicationCode.IND_01 and "MELIRIK MATA KE KIRI" == l_el
+    assert c_hl == IndicationCode.IND_01 and "MENOLEH KE KIRI" == l_hl
+
+    # 3. >1 cm di luar KANAN layar (X > +16.08 cm): simetris sempurna dengan kiri!
+    f_eye_right = _make_face_3d(gaze_x=0.520 + (22.0 / 500.0))  # X_hit ~ +17.0 cm
+    c_er, l_er = evaluate_instant_indication(180.0, 5.0, [f_eye_right], cfg)
+    assert c_er == IndicationCode.IND_01 and "MELIRIK MATA KE KANAN" == l_er
+
+    # 4. Invarian Pergeseran Kursi (+5 cm ke kanan): batas fisik layar tetap simetris terhadap laptop!
+    f_shifted_center = _make_face_3d(eye_x_cm=5.0, head_yaw_deg=-6.8)  # Menatap tengah layar X ~ 0 cm
+    assert evaluate_instant_indication(180.0, 5.0, [f_shifted_center], cfg)[0] == IndicationCode.NORMAL
+
+    # 5. >1 cm di ATAS bezel kamera (Y < -1.0 cm)
+    f_eye_up = _make_face_3d(eye_y_cm=0.5, gaze_y=-0.130 - (3.0 / 300.0))  # Y_hit ~ -1.7 cm
+    c_up, l_up = evaluate_instant_indication(180.0, 5.0, [f_eye_up], cfg)
+    assert c_up == IndicationCode.IND_02 and "ATAS" in l_up
+
+    # 6. Tepat mencapai / melewati titik akhir bawah touchpad (>= 21.0 cm)
+    f_touchpad_end_eye = _make_face_3d(
+        eye_y_cm=1.0,
+        eye_z_cm=42.0,
+        head_pitch_deg=4.0,
+        gaze_y=-0.130 + (39.5 / 380.0),
     )
-    c_head_left, l_head_left = evaluate_instant_indication(
-        200.0, 4.0, [_make_face(yaw=0.33, pitch=0.34, gaze_x=0.53, gaze_y=-0.12)],
-        state.baseline_yaw, state.baseline_pitch, cfg, state.baseline_gaze_x, state.baseline_gaze_y, state.safe_bounds
-    )
-    assert c_eye_left == IndicationCode.IND_01 and "MELIRIK" in l_eye_left
-    assert c_head_left == IndicationCode.IND_01 and "MENOLEH" in l_head_left
-
-    # 3. Keluar ~1 cm di KANAN layar -> IND-01
-    c_eye_right, _ = evaluate_instant_indication(
-        200.0, 4.0, [_make_face(yaw=0.52, pitch=0.34, gaze_x=0.648, gaze_y=-0.12)],
-        state.baseline_yaw, state.baseline_pitch, cfg, state.baseline_gaze_x, state.baseline_gaze_y, state.safe_bounds
-    )
-    assert c_eye_right == IndicationCode.IND_01
-
-    # 4. Keluar ~1 cm di ATAS bezel layar / kamera -> IND-02
-    c_eye_top, l_eye_top = evaluate_instant_indication(
-        200.0, 4.0, [_make_face(yaw=0.52, pitch=0.34, gaze_x=0.53, gaze_y=-0.188)],
-        state.baseline_yaw, state.baseline_pitch, cfg, state.baseline_gaze_x, state.baseline_gaze_y, state.safe_bounds
-    )
-    assert c_eye_top == IndicationCode.IND_02 and "ATAS" in l_eye_top
-
-    # 5. Tepat di titik akhir bawah touchpad -> langsung IND-02!
-    c_touchpad_end, l_touchpad_end = evaluate_instant_indication(
-        200.0, 4.0, [_make_face(yaw=0.52, pitch=0.38, gaze_x=0.53, gaze_y=-0.02, ear=0.22)],
-        state.baseline_yaw, state.baseline_pitch, cfg, state.baseline_gaze_x, state.baseline_gaze_y, state.safe_bounds
-    )
-    assert c_touchpad_end == IndicationCode.IND_02 and "TOUCHPAD" in l_touchpad_end
+    hit_tp = project_gaze_3d(f_touchpad_end_eye, cfg)
+    assert hit_tp.on_keyboard_deck is True
+    assert hit_tp.deck_z_cm >= 21.0
+    c_tp, l_tp = evaluate_instant_indication(180.0, 5.0, [f_touchpad_end_eye], cfg)
+    assert c_tp == IndicationCode.IND_02 and "TOUCHPAD" in l_tp
 
 
-def test_blink_guard_keeps_head_tracking_active_while_ignoring_iris_spike() -> None:
-    """Saat berkedip (EAR < 0.09), lonjakan iris diabaikan tetapi tolehan kepala tetap tertangkap."""
-    cfg = DetectorConfig()
-    state = MonitoringState()
-    state.calibrate(0.50, 0.35, 0.50, -0.11, cfg)
-
-    # Berkedip saat kepala lurus -> tetap NORMAL meski iris spike ekstrem
-    c_blink, _ = evaluate_instant_indication(
-        200.0, 4.0, [_make_face(yaw=0.50, pitch=0.35, gaze_y=-0.40, ear=0.05)],
-        0.50, 0.35, cfg, 0.50, -0.11, state.safe_bounds
-    )
-    assert c_blink == IndicationCode.NORMAL
-
-    # Menoleh kepala jauh saat mata menyipit -> tetap tertangkap IND-01
-    c_squint_turn, _ = evaluate_instant_indication(
-        200.0, 4.0, [_make_face(yaw=0.20, pitch=0.35, gaze_x=0.50, ear=0.05)],
-        0.50, 0.35, cfg, 0.50, -0.11, state.safe_bounds
-    )
-    assert c_squint_turn == IndicationCode.IND_01
-
-
-def test_ema_signal_smoothing_reduces_spike_jitter() -> None:
-    """Memastikan filter EMA (alpha=0.45) meredam lonjakan 1 frame."""
-    state = MonitoringState()
-    f0 = smooth_primary_face_pose([_make_face(yaw=0.50, gaze_x=0.50)], state, alpha=0.45)[0]
-    assert f0.yaw == pytest.approx(0.50)
-
-    f1 = smooth_primary_face_pose([_make_face(yaw=0.70, gaze_x=0.60)], state, alpha=0.45)[0]
-    assert f1.yaw == pytest.approx(0.59)
-    assert f1.gaze_x == pytest.approx(0.545)
-
-
-def test_instant_indication_priority_and_bidirectional_pitch() -> None:
-    """Memverifikasi hierarki prioritas IND-05 > IND-03 > IND-04 > IND-01 > IND-02 > NORMAL."""
+def test_anti_spoof_lens_calibration_accepts_honest_and_rejects_cheating() -> None:
+    """
+    Memastikan 5-Layer Anti-Spoof Gate menolak peserta yang mencoba mengakali kalibrasi
+    (melirik jauh, menoleh, menutup mata, goyang cepat, jarak ekstrem) dan menerima tatapan jujur.
+    """
     cfg = DetectorConfig()
 
-    code, label = evaluate_instant_indication(20.0, 5.0, [_make_face(), _make_face()], 0.5, 0.35, cfg)
-    assert code == IndicationCode.IND_05 and "GELAP" in label
+    # Skenario Curang 1: Peserta melirik jauh ke kiri saat kalibrasi lensa -> WAJIB DITOLAK!
+    spoof_state = MonitoringState()
+    spoof_state.start_lens_calibration(now_monotonic=0.0, duration_sec=2.0)
+    cheater_eye_face = _make_face_3d(gaze_x=0.440)  # Melirik ~38 derajat ke luar layar!
+    advance_lens_calibration(spoof_state, [cheater_eye_face], 1.5, cfg)
+    res_spoof = advance_lens_calibration(spoof_state, [cheater_eye_face], 2.05, cfg)
+    assert res_spoof is not None
+    assert res_spoof.calibration_event == "REJECTED"
+    assert spoof_state.is_calibrated is False
+    assert "ANTI-SPOOF" in res_spoof.banner_text
 
-    code, label = evaluate_instant_indication(210.0, 0.2, [], 0.5, 0.35, cfg)
-    assert code == IndicationCode.IND_05 and "OKLUSI" in label
+    # Skenario Curang 2: Peserta menolehkan kepala 20 derajat saat kalibrasi -> WAJIB DITOLAK!
+    spoof_head_state = MonitoringState()
+    spoof_head_state.start_lens_calibration(0.0, 2.0)
+    cheater_head_face = _make_face_3d(head_yaw_deg=20.0)
+    advance_lens_calibration(spoof_head_state, [cheater_head_face], 1.6, cfg)
+    res_head = advance_lens_calibration(spoof_head_state, [cheater_head_face], 2.05, cfg)
+    assert res_head is not None and res_head.calibration_event == "REJECTED"
+    assert spoof_head_state.is_calibrated is False
 
-    code, _ = evaluate_instant_indication(120.0, 6.0, [_make_face(), _make_face()], 0.5, 0.35, cfg)
-    assert code == IndicationCode.IND_03
+    # Skenario Curang 3: Peserta memejamkan/menyipitkan mata (EAR=0.08) -> WAJIB DITOLAK!
+    spoof_ear_state = MonitoringState()
+    spoof_ear_state.start_lens_calibration(0.0, 2.0)
+    squint_face = _make_face_3d(ear=0.08)
+    advance_lens_calibration(spoof_ear_state, [squint_face], 1.6, cfg)
+    res_ear = advance_lens_calibration(spoof_ear_state, [squint_face], 2.05, cfg)
+    assert res_ear is not None and res_ear.calibration_event == "REJECTED"
 
-    code, _ = evaluate_instant_indication(120.0, 6.0, [], 0.5, 0.35, cfg)
-    assert code == IndicationCode.IND_04
+    # Skenario Curang 4: Peserta melirik bola mata ke bawah keyboard saat kalibrasi -> WAJIB DITOLAK!
+    spoof_down_state = MonitoringState()
+    spoof_down_state.start_lens_calibration(0.0, 2.0)
+    down_eye_face = _make_face_3d(gaze_y=-0.040)
+    advance_lens_calibration(spoof_down_state, [down_eye_face], 1.6, cfg)
+    res_down = advance_lens_calibration(spoof_down_state, [down_eye_face], 2.05, cfg)
+    assert res_down is not None and res_down.calibration_event == "REJECTED"
 
-    code_down, label_down = evaluate_instant_indication(
-        120.0, 6.0, [_make_face(pitch=0.52)], 0.50, 0.35, cfg
+    # Skenario Jujur + Engsel Layar Miring 108 deg (head_pitch_deg=-14 deg di kamera) -> SUKSES!
+    honest_state = MonitoringState()
+    honest_state.start_lens_calibration(0.0, 2.0)
+    honest_face = _make_face_3d(
+        eye_x_cm=1.0,
+        eye_y_cm=1.2,
+        eye_z_cm=43.0,
+        head_yaw_deg=-1.0,
+        head_pitch_deg=-14.0,
+        gaze_x=0.525,
+        gaze_y=-0.128,
+        ear=0.35,
     )
-    code_up, label_up = evaluate_instant_indication(
-        120.0, 6.0, [_make_face(pitch=0.20)], 0.50, 0.35, cfg
-    )
-    assert code_down == IndicationCode.IND_02 and "MENUNDUK" in label_down
-    assert code_up == IndicationCode.IND_02 and "MENDONGAK" in label_up
+    advance_lens_calibration(honest_state, [honest_face], 1.4, cfg)
+    advance_lens_calibration(honest_state, [honest_face], 1.8, cfg)
+    res_ok = advance_lens_calibration(honest_state, [honest_face], 2.05, cfg)
+    assert res_ok is not None and res_ok.calibration_event == "COMPLETED"
+    assert honest_state.is_calibrated is True
+    assert abs(honest_state.calib_yaw_offset_deg) <= cfg.max_calib_offset_yaw_deg
 
 
-def test_calibration_gate_grace_period_and_cooldown() -> None:
-    """Menguji Calibration Gate, durasi lirikan 2.5s, grace period 0.3s, dan cooldown 5.0s."""
+def test_vor_compensation_and_blink_guard() -> None:
+    """Kompensasi VOR menjaga layar tetap hijau, dan kedipan tidak memicu lonjakan iris."""
+    cfg = DetectorConfig()
+
+    # VOR: Kepala berputar +10 deg ke kanan, bola mata mengompensasi -10 deg ke kiri (tetap di layar)
+    vor_face = _make_face_3d(head_yaw_deg=10.0, gaze_x=0.520 - (10.0 / 500.0), head_pitch_deg=8.0)
+    code_vor, _ = evaluate_instant_indication(180.0, 5.0, [vor_face], cfg)
+    assert code_vor == IndicationCode.NORMAL
+
+    # Blink Guard: Mata berkedip (EAR=0.05) dengan spike gaze_y ekstrem -> tetap NORMAL
+    blink_face = _make_face_3d(head_pitch_deg=8.0, gaze_y=-0.45, ear=0.05)
+    assert evaluate_instant_indication(180.0, 5.0, [blink_face], cfg)[0] == IndicationCode.NORMAL
+
+    # Menoleh kepala jauh sambil mata menyipit (EAR=0.05) -> tetap tertangkap IND-01!
+    squint_turn = _make_face_3d(head_yaw_deg=-26.0, ear=0.05)
+    assert evaluate_instant_indication(180.0, 5.0, [squint_turn], cfg)[0] == IndicationCode.IND_01
+
+
+def test_ema_priority_grace_period_cooldown_and_trust_floor() -> None:
+    """Menguji EMA, prioritas IND-05..NORMAL, grace period 0.3s, cooldown 5s, & floor 0%."""
     cfg = DetectorConfig()
     state = MonitoringState()
 
-    uncal_step = step_temporal_monitor(state, IndicationCode.IND_03, ">1 ORANG", 10.0, cfg)
-    assert uncal_step.banner_state == BannerState.UNCALIBRATED
-    assert state.trust_score == pytest.approx(100.0)
+    f0 = smooth_primary_face_pose([_make_face_3d(head_yaw_deg=0.0)], state, alpha=0.42)[0]
+    assert f0.head_yaw_deg == pytest.approx(0.0)
+    f1 = smooth_primary_face_pose([_make_face_3d(head_yaw_deg=10.0)], state, alpha=0.42)[0]
+    assert f1.head_yaw_deg == pytest.approx(4.2)
 
-    state.calibrate(0.50, 0.35, 0.50, -0.11, cfg)
+    assert evaluate_instant_indication(20.0, 5.0, [_make_face_3d()], cfg)[0] == IndicationCode.IND_05
+    assert evaluate_instant_indication(210.0, 0.2, [], cfg)[0] == IndicationCode.IND_05
+    assert (
+        evaluate_instant_indication(150.0, 5.0, [_make_face_3d(), _make_face_3d()], cfg)[0]
+        == IndicationCode.IND_03
+    )
+    assert evaluate_instant_indication(150.0, 5.0, [], cfg)[0] == IndicationCode.IND_04
 
+    uncal = step_temporal_monitor(state, IndicationCode.IND_03, ">1 ORANG", 5.0, cfg)
+    assert uncal.banner_state == BannerState.UNCALIBRATED
+
+    state.apply_lens_calibration(0.0, 0.0, cfg)
     step_temporal_monitor(state, IndicationCode.IND_01, "MELIRIK MATA KE KIRI", 10.0, cfg)
-    step_temporal_monitor(state, IndicationCode.NORMAL, "FOKUS", 12.2, cfg)
-    s_gaze_alert = step_temporal_monitor(
-        state, IndicationCode.IND_01, "MELIRIK MATA KE KIRI", 12.55, cfg
+    step_temporal_monitor(state, IndicationCode.NORMAL, "FOKUS", 12.2, cfg)  # < 0.3s flicker
+    alert_step = step_temporal_monitor(
+        state, IndicationCode.IND_01, "MELIRIK MATA KE KIRI", 12.6, cfg
     )
-    assert s_gaze_alert.banner_state == BannerState.ALERT
-    assert s_gaze_alert.should_log_evidence is True
+    assert alert_step.banner_state == BannerState.ALERT
+    assert alert_step.should_log_evidence is True
     assert state.trust_score == pytest.approx(95.0)
 
-    s_cool = step_temporal_monitor(
+    cool_step = step_temporal_monitor(
         state, IndicationCode.IND_01, "MELIRIK MATA KE KIRI", 15.0, cfg
     )
-    assert s_cool.should_log_evidence is False
-    assert state.trust_score == pytest.approx(95.0)
+    assert cool_step.should_log_evidence is False
 
-
-def test_trust_score_floor_and_integrity_levels() -> None:
-    """Memastikan Trust Score tidak pernah negatif dan pemetaan IntegrityLevel akurat."""
     assert resolve_integrity_level(100.0) == IntegrityLevel.AMAN
-    assert resolve_integrity_level(75.0) == IntegrityLevel.WASPADA
-    assert resolve_integrity_level(45.0) == IntegrityLevel.TINJAUAN_PENGAWAS
+    assert resolve_integrity_level(70.0) == IntegrityLevel.WASPADA
+    assert resolve_integrity_level(40.0) == IntegrityLevel.TINJAUAN_PENGAWAS
 
-    cfg = DetectorConfig()
-    state = MonitoringState(trust_score=3.0)
-    state.calibrate(0.50, 0.35, config=cfg)
-    step_temporal_monitor(state, IndicationCode.IND_03, ">1 ORANG", 0.0, cfg)
-    step_temporal_monitor(state, IndicationCode.IND_03, ">1 ORANG", 1.2, cfg)
-    assert state.trust_score == pytest.approx(0.0)
+    low_state = MonitoringState(trust_score=2.0)
+    low_state.apply_lens_calibration(0.0, 0.0, cfg)
+    step_temporal_monitor(low_state, IndicationCode.IND_03, ">1 ORANG", 0.0, cfg)
+    step_temporal_monitor(low_state, IndicationCode.IND_03, ">1 ORANG", 1.2, cfg)
+    assert low_state.trust_score == pytest.approx(0.0)
 
 
-def test_evidence_logger_and_five_stage_dashboard_render(tmp_path: Path) -> None:
-    """Menguji penyimpanan bukti .jpg/.csv serta render kelima panduan panah kalibrasi."""
+def test_evidence_logger_and_dashboard_3d_hud_render(tmp_path: Path) -> None:
+    """Menguji penyimpanan bukti .jpg/.csv serta render HUD 3D (Layar, Touchpad, & Anti-Spoof)."""
     cfg = DetectorConfig()
     clahe = create_clahe(cfg)
-    raw = np.full((480, 640, 3), 110, dtype=np.uint8)
-    frame_pcd = preprocess_frame_lab_clahe(raw, clahe, cfg)
-    roi_pcd = process_roi_pcd_panel(raw[100:220, 200:320], clahe, cfg)
+    raw_frame = np.full((480, 640, 3), 120, dtype=np.uint8)
+    frame_pcd = preprocess_frame_lab_clahe(raw_frame, clahe, cfg)
+    roi_pcd = process_roi_pcd_panel(raw_frame[120:220, 200:340], clahe, cfg)
 
     state = MonitoringState()
-    state.start_five_point_calibration(0.0, 2.0)
+    state.start_lens_calibration(0.0, 2.0)
+    cal_step = advance_lens_calibration(state, [_make_face_3d()], 1.0, cfg)
+    assert cal_step is not None
+    dash_cal = render_dashboard(
+        raw_frame, [_make_face_3d()], state, cal_step, frame_pcd, roi_pcd, cfg.min_luminance, cfg
+    )
+    assert dash_cal.shape == (DASHBOARD_HEIGHT, DASHBOARD_WIDTH, 3)
 
-    for stage_idx in range(5):
-        state.calibration_stage_idx = stage_idx
-        cal_step = advance_five_point_calibration(state, [_make_face()], 0.2, cfg)
-        assert cal_step is not None
-        dashboard = render_dashboard(
-            raw_frame_bgr=raw,
-            faces=[_make_face()],
-            state=state,
-            step_result=cal_step,
-            frame_pcd=frame_pcd,
-            roi_pcd=roi_pcd,
-            min_luminance=cfg.min_luminance,
-        )
-        assert dashboard.shape == (DASHBOARD_HEIGHT, DASHBOARD_WIDTH, 3)
+    # Render saat di atas dek touchpad
+    state.apply_lens_calibration(0.0, 0.0, cfg)
+    deck_face = _make_face_3d(head_pitch_deg=6.0, gaze_y=-0.05)
+    safe_step = step_temporal_monitor(state, IndicationCode.NORMAL, "FOKUS", 3.0, cfg)
+    dash_deck = render_dashboard(
+        raw_frame, [deck_face], state, safe_step, frame_pcd, roi_pcd, cfg.min_luminance, cfg
+    )
+    assert dash_deck.shape == (DASHBOARD_HEIGHT, DASHBOARD_WIDTH, 3)
 
     evidence_dir = tmp_path / "bukti_indikasi"
     log_csv = tmp_path / "log_indikasi_ujian.csv"
     logger = EvidenceLogger(evidence_dir, log_csv)
     saved_jpg = logger.record_indication(
-        annotated_frame=dashboard[:, :640],
+        annotated_frame=dash_deck[:, :640],
         code=IndicationCode.IND_02,
         behavior_label="MELIRIK BAWAH (LEWAT TOUCHPAD)",
         duration_sec=2.6,
-        mean_luminance=110.0,
+        mean_luminance=120.0,
         trust_score=95.0,
         flag_number=1,
-        timestamp=datetime(2026, 10, 30, 23, 25, 0),
+        timestamp=datetime(2026, 10, 30, 23, 50, 0),
     )
     assert saved_jpg.exists()
-    with open(log_csv, mode="r", encoding="utf-8") as csv_file:
+    with open(log_csv, encoding="utf-8") as csv_file:
         rows = list(csv.reader(csv_file))
     assert rows[0] == CSV_HEADERS
+    assert rows[1][1] == "IND-02"

@@ -1,7 +1,8 @@
-"""Detektor MediaPipe Tasks FaceLandmarker, Unified Point-of-Regard (POR), & kalibrasi 5 titik."""
+"""Detektor MediaPipe 3D FaceLandmarker, L-Shaped 3D Gaze Ray-Casting, & Anti-Spoof Gate."""
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+import math
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol, Self
@@ -15,16 +16,15 @@ import numpy as np
 from numpy.typing import NDArray
 
 from src.config import (
-    CALIBRATION_SEQUENCE,
     BannerState,
-    CalibrationStage,
+    CalibrationSample,
     DetectorConfig,
     IndicationCode,
     MonitoringState,
-    SafeZoneBounds,
 )
 
 UInt8Image = NDArray[np.uint8]
+FloatMatrix = NDArray[np.floating]
 
 # Indeks kanonik 478 titik landmark MediaPipe FaceLandmarker (Kepala & Iris)
 NOSE_TIP_IDX: int = 1
@@ -32,14 +32,14 @@ LEFT_CHEEK_IDX: int = 234
 RIGHT_CHEEK_IDX: int = 454
 CHIN_IDX: int = 152
 
-# Mata sisi kiri citra tercermin (Anatomical Right Eye: sudut 33-133, kelopak 159-145, pusat iris 468)
+# Mata sisi kiri citra tercermin (Anatomical Right Eye: sudut 33-133, kelopak 159-145, iris 468)
 R_EYE_OUTER_IDX: int = 33
 R_EYE_INNER_IDX: int = 133
 R_EYE_TOP_IDX: int = 159
 R_EYE_BOTTOM_IDX: int = 145
 R_IRIS_CENTER_IDX: int = 468
 
-# Mata sisi kanan citra tercermin (Anatomical Left Eye: sudut 362-263, kelopak 386-374, pusat iris 473)
+# Mata sisi kanan citra tercermin (Anatomical Left Eye: sudut 362-263, kelopak 386-374, iris 473)
 L_EYE_INNER_IDX: int = 362
 L_EYE_OUTER_IDX: int = 263
 L_EYE_TOP_IDX: int = 386
@@ -50,14 +50,6 @@ LEFT_EYE_OUTER_IDX: int = R_EYE_OUTER_IDX
 RIGHT_EYE_OUTER_IDX: int = L_EYE_OUTER_IDX
 
 BBOX_PADDING_PX: int = 15
-
-STAGE_PROMPTS: dict[CalibrationStage, str] = {
-    CalibrationStage.CENTER: "1/5 TATAP TENGAH LAYAR FISIK LAPTOP",
-    CalibrationStage.LEFT: "2/5 TATAP BINGKAI TEPI KIRI LAYAR",
-    CalibrationStage.RIGHT: "3/5 TATAP BINGKAI TEPI KANAN LAYAR",
-    CalibrationStage.TOP: "4/5 TATAP BEZEL ATAS LAYAR / WEBCAM",
-    CalibrationStage.TOUCHPAD: "5/5 TATAP TITIK AKHIR BAWAH TOUCHPAD",
-}
 
 
 class LandmarkPoint(Protocol):
@@ -72,17 +64,35 @@ class LandmarkPoint(Protocol):
 
 @dataclass(frozen=True)
 class DetectedFace:
-    """Data geometri kepala, iris mata, dan bounding box satu wajah dalam frame."""
+    """Data geometri 3D metrik kepala (cm & derajat), rasio iris, dan bounding box wajah."""
 
     bbox: tuple[int, int, int, int]
     nose_px: tuple[int, int]
     iris_px: tuple[tuple[int, int], tuple[int, int]]
     area: int
-    yaw: float
-    pitch: float
-    gaze_x: float = 0.50
-    gaze_y: float = -0.11
+    eye_x_cm: float = 0.0
+    eye_y_cm: float = 0.5
+    eye_z_cm: float = 43.0
+    head_yaw_deg: float = 0.0
+    head_pitch_deg: float = 0.0
+    gaze_x: float = 0.520
+    gaze_y: float = -0.130
     ear: float = 0.30
+
+
+@dataclass(frozen=True)
+class GazeRayHit3D:
+    """Hasil perpotongan sinar pandang 3D terhadap bidang layar vertikal & dek keyboard/touchpad."""
+
+    screen_x_cm: float
+    screen_y_cm: float
+    hit_x_cm: float
+    deck_z_cm: float
+    on_keyboard_deck: bool
+    total_yaw_deg: float
+    total_pitch_deg: float
+    eye_yaw_deg: float
+    eye_pitch_deg: float
 
 
 @dataclass(frozen=True)
@@ -95,7 +105,7 @@ class TemporalStepResult:
     effective_label: str
     elapsed_sec: float
     should_log_evidence: bool
-    calibration_event: str | None = None  # "NEXT_STAGE" atau "COMPLETED" untuk sinyal suara
+    calibration_event: str | None = None  # "STARTED", "COMPLETED", atau "REJECTED"
 
 
 def ensure_landmarker_model(model_path: Path, model_url: str) -> Path:
@@ -123,8 +133,8 @@ def ensure_landmarker_model(model_path: Path, model_url: str) -> Path:
     return model_path
 
 
-def calculate_yaw_pitch(landmarks: Sequence[LandmarkPoint]) -> tuple[float, float]:
-    """Menghitung rasio geometri kepala Yaw (horizontal) dan Pitch (vertikal)."""
+def calculate_yaw_pitch_ratios(landmarks: Sequence[LandmarkPoint]) -> tuple[float, float]:
+    """Menghitung rasio geometri kepala 2D Yaw dan Pitch (digunakan sebagai fallback pinhole)."""
     nose = landmarks[NOSE_TIP_IDX]
     left_cheek = landmarks[LEFT_CHEEK_IDX]
     right_cheek = landmarks[RIGHT_CHEEK_IDX]
@@ -147,7 +157,7 @@ def calculate_iris_gaze_and_ear(
 ) -> tuple[float, float, float]:
     """Menghitung rasio posisi pupil/iris mata (Gaze X, Gaze Y) dan Eye Aspect Ratio (EAR)."""
     if len(landmarks) <= L_IRIS_CENTER_IDX:
-        return 0.50, -0.11, 0.30
+        return 0.520, -0.130, 0.30
 
     r_width = max(0.001, landmarks[R_EYE_INNER_IDX].x - landmarks[R_EYE_OUTER_IDX].x)
     l_width = max(0.001, landmarks[L_EYE_OUTER_IDX].x - landmarks[L_EYE_INNER_IDX].x)
@@ -169,72 +179,221 @@ def calculate_iris_gaze_and_ear(
     return float(gaze_x), float(gaze_y), float(ear)
 
 
-def compute_point_of_regard(
-    yaw: float,
-    pitch: float,
+def extract_3d_pose_from_matrix_or_pinhole(
+    landmarks: Sequence[LandmarkPoint],
+    transform_matrix: FloatMatrix | None,
+    frame_width: int,
+    frame_height: int,
+    config: DetectorConfig,
+) -> tuple[float, float, float, float, float]:
+    """
+    Mengekstrak posisi mata 3D (X_cm, Y_down_cm, Z_cm) & sudut kepala (head_yaw_deg, head_pitch_deg)
+    relatif terhadap lensa fisik webcam (0, 0, 0) menggunakan matriks 4x4 MediaPipe atau pinhole.
+    """
+    if transform_matrix is not None and transform_matrix.shape == (4, 4):
+        eye_x_cm = float(transform_matrix[0, 3])
+        eye_y_cm = float(-transform_matrix[1, 3])
+        eye_z_cm = float(min(120.0, max(18.0, abs(float(transform_matrix[2, 3])))))
+        rz_x = float(transform_matrix[0, 2])
+        rz_y = float(transform_matrix[1, 2])
+        rz_z = float(transform_matrix[2, 2])
+        head_yaw_deg = math.degrees(math.atan2(rz_x, rz_z))
+        head_pitch_deg = math.degrees(math.atan2(-rz_y, rz_z))
+        return eye_x_cm, eye_y_cm, eye_z_cm, head_yaw_deg, head_pitch_deg
+
+    focal_px = frame_width / (2.0 * math.tan(math.radians(config.camera_fov_deg * 0.5)))
+    cheek_width_px = max(
+        8.0,
+        (landmarks[RIGHT_CHEEK_IDX].x - landmarks[LEFT_CHEEK_IDX].x) * frame_width,
+    )
+    eye_z_cm = min(120.0, max(18.0, (config.avg_face_width_cm * focal_px) / cheek_width_px))
+    mid_eye_x_px = (
+        (landmarks[R_EYE_OUTER_IDX].x + landmarks[L_EYE_OUTER_IDX].x) * 0.5 * frame_width
+    )
+    mid_eye_y_px = (
+        (landmarks[R_EYE_OUTER_IDX].y + landmarks[L_EYE_OUTER_IDX].y) * 0.5 * frame_height
+    )
+    eye_x_cm = (mid_eye_x_px - frame_width * 0.5) * eye_z_cm / focal_px
+    eye_y_cm = (mid_eye_y_px - frame_height * 0.5) * eye_z_cm / focal_px
+
+    yaw_ratio, pitch_ratio = calculate_yaw_pitch_ratios(landmarks)
+    head_yaw_deg = (yaw_ratio - 0.50) * 90.0
+    head_pitch_deg = (pitch_ratio - 0.35) * 90.0
+    return (
+        float(eye_x_cm),
+        float(eye_y_cm),
+        float(eye_z_cm),
+        float(head_yaw_deg),
+        float(head_pitch_deg),
+    )
+
+
+def compute_eyeball_angles_deg(
     gaze_x: float,
     gaze_y: float,
     ear: float,
-    baseline_yaw: float,
-    baseline_pitch: float,
-    baseline_gaze_x: float,
-    baseline_gaze_y: float,
     config: DetectorConfig,
 ) -> tuple[float, float]:
     """
-    Menghitung koordinat pandangan gabungan kepala + bola mata (Unified Point-of-Regard):
-    - POR_x = Gaze_x + k_x * (Yaw - Yaw_center)
-    - POR_y = Gaze_y + k_y * (Pitch - Pitch_center)
-    Saat kelopak mata tertutup rapat karena berkedip (EAR < min_ear_for_gaze), posisi iris
-    diganti baseline_gaze agar kedipan tidak menimbulkan lonjakan namun gerakan kepala tetap aktif.
+    Mengonversi pergeseran rasio iris di dalam soket mata menjadi sudut rotasi bola mata (derajat).
+    Dilengkapi EAR Blink Guard: saat berkedip (EAR < min_ear_for_gaze), sudut bola mata dinolkan
+    agar kedipan tidak memicu lonjakan palsu sementara pelacakan kepala 3D tetap berjalan.
     """
-    eff_gx = gaze_x if ear >= config.min_ear_for_gaze else baseline_gaze_x
-    eff_gy = gaze_y if ear >= config.min_ear_for_gaze else baseline_gaze_y
+    if ear < config.min_ear_for_gaze:
+        return 0.0, 0.0
 
-    por_x = eff_gx + config.yaw_to_gaze_gain * (yaw - baseline_yaw)
-    por_y = eff_gy + config.pitch_to_gaze_gain * (pitch - baseline_pitch)
-    return float(por_x), float(por_y)
+    dgx = gaze_x - config.neutral_gaze_x
+    dgy = gaze_y - config.neutral_gaze_y
+    eye_yaw_deg = dgx * config.eye_yaw_gain_deg
+    pitch_gain = (
+        config.eye_pitch_down_gain_deg if dgy >= 0.0 else config.eye_pitch_up_gain_deg
+    )
+    eye_pitch_deg = dgy * pitch_gain
+    return float(eye_yaw_deg), float(eye_pitch_deg)
 
 
-def build_safe_zone_bounds(
-    stage_averages: dict[CalibrationStage, tuple[float, float, float, float]],
+def project_gaze_3d(
+    face: DetectedFace,
     config: DetectorConfig,
-) -> tuple[tuple[float, float, float, float], SafeZoneBounds]:
+    calib_yaw_offset_deg: float = 0.0,
+    calib_pitch_offset_deg: float = 0.0,
+) -> GazeRayHit3D:
     """
-    Menghitung batas zona aman 4 sisi dari hasil rata-rata 5 titik fisik laptop:
-    - Kiri, Kanan, dan Atas diberi margin proporsional ~1 cm di luar bingkai layar.
-    - Bawah dikunci tepat pada titik akhir bawah touchpad.
+    Memproyeksikan sinar pandang 3D dari mata peserta (X_e, Y_e, Z_e) ke geometri fisik laptop
+    berbentuk L (Bidang Layar Vertikal Z = 0 dan Bidang Dek Keyboard/Touchpad Y = hinge_y_cm).
     """
-    c_yaw, c_pitch, c_gx, c_gy = stage_averages[CalibrationStage.CENTER]
+    eye_yaw_deg, eye_pitch_deg = compute_eyeball_angles_deg(
+        face.gaze_x, face.gaze_y, face.ear, config
+    )
+    total_yaw_deg = max(
+        -75.0,
+        min(75.0, face.head_yaw_deg + eye_yaw_deg + calib_yaw_offset_deg),
+    )
+    total_pitch_deg = max(
+        -75.0,
+        min(75.0, face.head_pitch_deg + eye_pitch_deg + calib_pitch_offset_deg),
+    )
 
-    def _stage_por(stage: CalibrationStage) -> tuple[float, float]:
-        s_yaw, s_pitch, s_gx, s_gy = stage_averages[stage]
-        return (
-            s_gx + config.yaw_to_gaze_gain * (s_yaw - c_yaw),
-            s_gy + config.pitch_to_gaze_gain * (s_pitch - c_pitch),
+    tan_yaw = math.tan(math.radians(total_yaw_deg))
+    tan_pitch = math.tan(math.radians(total_pitch_deg))
+
+    screen_x_cm = face.eye_x_cm + face.eye_z_cm * tan_yaw
+    screen_y_cm = face.eye_y_cm + face.eye_z_cm * tan_pitch
+
+    if screen_y_cm <= config.hinge_y_cm or tan_pitch <= 0.001:
+        return GazeRayHit3D(
+            screen_x_cm=float(screen_x_cm),
+            screen_y_cm=float(screen_y_cm),
+            hit_x_cm=float(screen_x_cm),
+            deck_z_cm=0.0,
+            on_keyboard_deck=False,
+            total_yaw_deg=float(total_yaw_deg),
+            total_pitch_deg=float(total_pitch_deg),
+            eye_yaw_deg=float(eye_yaw_deg),
+            eye_pitch_deg=float(eye_pitch_deg),
         )
 
-    left_por_x, _ = _stage_por(CalibrationStage.LEFT)
-    right_por_x, _ = _stage_por(CalibrationStage.RIGHT)
-    _, top_por_y = _stage_por(CalibrationStage.TOP)
-    _, touchpad_por_y = _stage_por(CalibrationStage.TOUCHPAD)
+    drop_cm = max(6.0, config.hinge_y_cm - face.eye_y_cm)
+    t_ray_cm = drop_cm / tan_pitch
+    deck_z_cm = max(0.0, face.eye_z_cm - t_ray_cm)
+    hit_x_cm = face.eye_x_cm + t_ray_cm * tan_yaw
 
-    span_left = max(0.025, c_gx - left_por_x)
-    span_right = max(0.025, right_por_x - c_gx)
-    span_top = max(0.020, c_gy - top_por_y)
-    span_bottom = max(0.030, touchpad_por_y - c_gy)
-
-    margin_left = min(max(0.005, config.screen_edge_margin_ratio_x * span_left), 0.012)
-    margin_right = min(max(0.005, config.screen_edge_margin_ratio_x * span_right), 0.012)
-    margin_top = min(max(0.005, config.screen_edge_margin_ratio_top * span_top), 0.012)
-
-    bounds = SafeZoneBounds(
-        min_por_x=(c_gx - span_left) - margin_left,
-        max_por_x=(c_gx + span_right) + margin_right,
-        min_por_y=(c_gy - span_top) - margin_top,
-        max_por_y=(c_gy + span_bottom) + config.touchpad_end_offset,
+    return GazeRayHit3D(
+        screen_x_cm=float(screen_x_cm),
+        screen_y_cm=float(screen_y_cm),
+        hit_x_cm=float(hit_x_cm),
+        deck_z_cm=float(deck_z_cm),
+        on_keyboard_deck=True,
+        total_yaw_deg=float(total_yaw_deg),
+        total_pitch_deg=float(total_pitch_deg),
+        eye_yaw_deg=float(eye_yaw_deg),
+        eye_pitch_deg=float(eye_pitch_deg),
     )
-    return (c_yaw, c_pitch, c_gx, c_gy), bounds
+
+
+def validate_and_compute_lens_offset(
+    samples: Sequence[CalibrationSample],
+    config: DetectorConfig,
+) -> tuple[bool, float, float, str]:
+    """
+    Memvalidasi sampel kalibrasi 1 titik menatap Lensa Fisik Webcam (0, 0, 0) menggunakan
+    5-Layer Anti-Spoof Gate agar peserta tidak dapat memalsukan sudut pandang saat kalibrasi.
+    """
+    if not samples:
+        return False, 0.0, 0.0, "KALIBRASI GAGAL: SAMPEL WAJAH TIDAK DITEMUKAN"
+
+    n = len(samples)
+    mean_x = sum(s.eye_x_cm for s in samples) / n
+    mean_y = sum(s.eye_y_cm for s in samples) / n
+    mean_z = sum(s.eye_z_cm for s in samples) / n
+    mean_hyaw = sum(s.head_yaw_deg for s in samples) / n
+    mean_hpitch = sum(s.head_pitch_deg for s in samples) / n
+    mean_gx = sum(s.gaze_x for s in samples) / n
+    mean_gy = sum(s.gaze_y for s in samples) / n
+    mean_ear = sum(s.ear for s in samples) / n
+
+    # Layer 1: Validasi jarak fisik wajar di depan laptop (25 - 85 cm)
+    if not (config.min_calib_distance_cm <= mean_z <= config.max_calib_distance_cm):
+        return (
+            False,
+            0.0,
+            0.0,
+            f"DITOLAK: JARAK WAJAH {mean_z:.0f}CM (WAJIB 25-85CM)",
+        )
+
+    # Layer 2: Validasi mata terbuka (mencegah kalibrasi sambil merem/menyipit ekstrem)
+    if mean_ear < config.min_calib_ear:
+        return False, 0.0, 0.0, "DITOLAK: BUKA MATA & TATAP LENSA KAMERA"
+
+    # Layer 3: Validasi kestabilan tatapan (mencegah lirikan cepat / saccade spoofing)
+    if n >= 2:
+        var_yaw = sum((s.head_yaw_deg - mean_hyaw) ** 2 for s in samples) / n
+        var_gx = sum((s.gaze_x - mean_gx) ** 2 for s in samples) / n
+        if (
+            math.sqrt(var_yaw) > config.max_calib_std_yaw_deg
+            or math.sqrt(var_gx) > config.max_calib_std_gaze_x
+        ):
+            return False, 0.0, 0.0, "DITOLAK: TAHAN KEPALA & MATA TETAP STABIL"
+
+    # Sudut optik sejati dari mata peserta (mean_x, mean_y, mean_z) ke lensa fisik (0, 0, 0)
+    target_yaw_deg = math.degrees(math.atan2(-mean_x, mean_z))
+    target_pitch_deg = math.degrees(math.atan2(-mean_y, mean_z))
+
+    # Layer 4: Validasi pose kepala menghadap kamera (mendukung kemiringan engsel layar 90-115 deg)
+    pitch_err_deg = mean_hpitch - target_pitch_deg
+    if (
+        abs(mean_hyaw - target_yaw_deg) > config.max_calib_head_yaw_error_deg
+        or not (
+            config.min_calib_head_pitch_error_deg
+            <= pitch_err_deg
+            <= config.max_calib_head_pitch_error_deg
+        )
+    ):
+        return False, 0.0, 0.0, "ANTI-SPOOF: HADAPKAN WAJAH LURUS KE KAMERA!"
+
+    # Layer 5: Validasi batas anatomi iris vertikal & Angle-Kappa (menolak lirikan curang)
+    if not (config.min_calib_gaze_y <= mean_gy <= config.max_calib_gaze_y):
+        return False, 0.0, 0.0, "ANTI-SPOOF: JANGAN MELIRIK ATAS/BAWAH SAAT KALIBRASI!"
+
+    raw_eye_yaw, raw_eye_pitch = compute_eyeball_angles_deg(
+        mean_gx, mean_gy, mean_ear, config
+    )
+    yaw_offset = target_yaw_deg - (mean_hyaw + raw_eye_yaw)
+    pitch_offset = target_pitch_deg - (mean_hpitch + raw_eye_pitch)
+
+    if abs(yaw_offset) > config.max_calib_offset_yaw_deg or not (
+        config.min_calib_offset_pitch_deg
+        <= pitch_offset
+        <= config.max_calib_offset_pitch_deg
+    ):
+        return False, 0.0, 0.0, "ANTI-SPOOF: JANGAN MELIRIK, TATAP TEPAT LENSA!"
+
+    return (
+        True,
+        float(yaw_offset),
+        float(pitch_offset),
+        "KALIBRASI 3D AKTIF: ZONA 1CM LAYAR & 21CM TOUCHPAD TERKUNCI",
+    )
 
 
 def _clamp_pixel(norm_x: float, norm_y: float, width: int, height: int) -> tuple[int, int]:
@@ -249,10 +408,14 @@ def extract_faces_sorted_by_area(
     multi_face_landmarks: Sequence[Sequence[LandmarkPoint]],
     frame_width: int,
     frame_height: int,
+    transformation_matrices: Sequence[FloatMatrix] | None = None,
+    config: DetectorConfig | None = None,
 ) -> list[DetectedFace]:
-    """Mengekstrak geometri seluruh wajah dan mengurutkannya dari luas terbesar (peserta utama)."""
+    """Mengekstrak geometri 3D seluruh wajah dan mengurutkannya dari luas terbesar (Wajah #1)."""
+    cfg = config or DetectorConfig(frame_width=frame_width, frame_height=frame_height)
     detected_faces: list[DetectedFace] = []
-    for landmarks in multi_face_landmarks:
+
+    for idx, landmarks in enumerate(multi_face_landmarks):
         xs = [int(lm.x * frame_width) for lm in landmarks]
         ys = [int(lm.y * frame_height) for lm in landmarks]
 
@@ -275,7 +438,15 @@ def extract_faces_sorted_by_area(
         else:
             iris_px = (nose_px, nose_px)
 
-        yaw, pitch = calculate_yaw_pitch(landmarks)
+        mat: FloatMatrix | None = None
+        if transformation_matrices is not None and idx < len(transformation_matrices):
+            mat = np.asarray(transformation_matrices[idx], dtype=np.float64)
+
+        eye_x_cm, eye_y_cm, eye_z_cm, head_yaw_deg, head_pitch_deg = (
+            extract_3d_pose_from_matrix_or_pinhole(
+                landmarks, mat, frame_width, frame_height, cfg
+            )
+        )
         gaze_x, gaze_y, ear = calculate_iris_gaze_and_ear(landmarks)
 
         detected_faces.append(
@@ -284,8 +455,11 @@ def extract_faces_sorted_by_area(
                 nose_px=nose_px,
                 iris_px=iris_px,
                 area=area,
-                yaw=yaw,
-                pitch=pitch,
+                eye_x_cm=eye_x_cm,
+                eye_y_cm=eye_y_cm,
+                eye_z_cm=eye_z_cm,
+                head_yaw_deg=head_yaw_deg,
+                head_pitch_deg=head_pitch_deg,
                 gaze_x=gaze_x,
                 gaze_y=gaze_y,
                 ear=ear,
@@ -301,110 +475,128 @@ def smooth_primary_face_pose(
     state: MonitoringState,
     alpha: float,
 ) -> list[DetectedFace]:
-    """Menerapkan EMA smoothing pada orientasi kepala dan iris wajah peserta utama."""
+    """Menerapkan EMA smoothing pada sinyal posisi 3D, sudut kepala, dan rasio iris Wajah #1."""
     if not faces:
         state.reset_ema()
         return faces
 
     primary = faces[0]
-    s_yaw, s_pitch, s_gx, s_gy = state.update_ema(
-        yaw=primary.yaw,
-        pitch=primary.pitch,
-        gaze_x=primary.gaze_x,
-        gaze_y=primary.gaze_y,
+    smoothed = state.update_ema_pose(
+        raw_pose=(
+            primary.eye_x_cm,
+            primary.eye_y_cm,
+            primary.eye_z_cm,
+            primary.head_yaw_deg,
+            primary.head_pitch_deg,
+            primary.gaze_x,
+            primary.gaze_y,
+        ),
         alpha=alpha,
     )
     smoothed_primary = replace(
         primary,
-        yaw=s_yaw,
-        pitch=s_pitch,
-        gaze_x=s_gx,
-        gaze_y=s_gy,
+        eye_x_cm=smoothed[0],
+        eye_y_cm=smoothed[1],
+        eye_z_cm=smoothed[2],
+        head_yaw_deg=smoothed[3],
+        head_pitch_deg=smoothed[4],
+        gaze_x=smoothed[5],
+        gaze_y=smoothed[6],
     )
     return [smoothed_primary, *faces[1:]]
 
 
-def advance_five_point_calibration(
+def advance_lens_calibration(
     state: MonitoringState,
     raw_faces: Sequence[DetectedFace],
     now_monotonic: float,
     config: DetectorConfig,
 ) -> TemporalStepResult | None:
     """
-    Menjalankan mesin tahapan kalibrasi 5 titik (CENTER -> LEFT -> RIGHT -> TOP -> TOUCHPAD)
-    menggunakan sampel mentah bebas lag pada jendela 0.8 detik terakhir tiap tahap.
+    Menjalankan kalibrasi 1 titik menatap Lensa Fisik Webcam (2.0 detik) yang divalidasi oleh
+    5-Layer Anti-Spoof Gate. Batas layar & touchpad tetap terkunci secara hardware di config.
     """
-    stage = state.current_calibration_stage
-    if stage is None or state.calibration_deadline is None:
+    if state.calibration_deadline is None:
         return None
 
     if len(raw_faces) != 1:
-        state.cancel_calibration()
+        msg = "KALIBRASI BATAL: PASTIKAN TEPAT 1 WAJAH DI KAMERA"
+        state.cancel_calibration(msg)
         return TemporalStepResult(
             banner_state=BannerState.UNCALIBRATED,
-            banner_text="KALIBRASI BATAL: PASTIKAN TEPAT 1 WAJAH DI KAMERA",
+            banner_text=msg,
             effective_code=IndicationCode.NORMAL,
             effective_label="KALIBRASI BATAL",
             elapsed_sec=0.0,
             should_log_evidence=False,
+            calibration_event="REJECTED",
         )
 
     remaining = state.calibration_deadline - now_monotonic
     primary = raw_faces[0]
     if remaining <= config.calibration_sample_window_sec:
         state.calibration_samples.append(
-            (primary.yaw, primary.pitch, primary.gaze_x, primary.gaze_y)
+            CalibrationSample(
+                eye_x_cm=primary.eye_x_cm,
+                eye_y_cm=primary.eye_y_cm,
+                eye_z_cm=primary.eye_z_cm,
+                head_yaw_deg=primary.head_yaw_deg,
+                head_pitch_deg=primary.head_pitch_deg,
+                gaze_x=primary.gaze_x,
+                gaze_y=primary.gaze_y,
+                ear=primary.ear,
+            )
         )
 
-    prompt = STAGE_PROMPTS[stage]
     if remaining > 0.0:
         return TemporalStepResult(
             banner_state=BannerState.CALIBRATING,
-            banner_text=f"{prompt} ({remaining:.1f}s)",
+            banner_text=f"TATAP LURUS LENSA FISIK WEBCAM DI ATAS ({remaining:.1f}s)",
             effective_code=IndicationCode.NORMAL,
-            effective_label="PROSES KALIBRASI",
+            effective_label="VALIDASI ANTI-SPOOF",
             elapsed_sec=0.0,
             should_log_evidence=False,
         )
 
     samples = state.calibration_samples or [
-        (primary.yaw, primary.pitch, primary.gaze_x, primary.gaze_y)
+        CalibrationSample(
+            eye_x_cm=primary.eye_x_cm,
+            eye_y_cm=primary.eye_y_cm,
+            eye_z_cm=primary.eye_z_cm,
+            head_yaw_deg=primary.head_yaw_deg,
+            head_pitch_deg=primary.head_pitch_deg,
+            gaze_x=primary.gaze_x,
+            gaze_y=primary.gaze_y,
+            ear=primary.ear,
+        )
     ]
-    n_samples = len(samples)
-    avg_tuple = (
-        sum(s[0] for s in samples) / n_samples,
-        sum(s[1] for s in samples) / n_samples,
-        sum(s[2] for s in samples) / n_samples,
-        sum(s[3] for s in samples) / n_samples,
+    is_valid, yaw_offset, pitch_offset, message = validate_and_compute_lens_offset(
+        samples, config
     )
-    state.stage_averages[stage] = avg_tuple
-    state.calibration_samples.clear()
-
-    next_idx = (state.calibration_stage_idx or 0) + 1
-    if next_idx < len(CALIBRATION_SEQUENCE):
-        state.calibration_stage_idx = next_idx
-        state.calibration_deadline = now_monotonic + config.calibration_stage_sec
-        next_stage = CALIBRATION_SEQUENCE[next_idx]
+    if not is_valid:
+        state.cancel_calibration(message)
+        print(f"[KALIBRASI DITOLAK] {message}")
         return TemporalStepResult(
-            banner_state=BannerState.CALIBRATING,
-            banner_text=f"{STAGE_PROMPTS[next_stage]} ({config.calibration_stage_sec:.1f}s)",
+            banner_state=BannerState.UNCALIBRATED,
+            banner_text=message,
             effective_code=IndicationCode.NORMAL,
-            effective_label="PROSES KALIBRASI",
+            effective_label="KALIBRASI DITOLAK",
             elapsed_sec=0.0,
             should_log_evidence=False,
-            calibration_event="NEXT_STAGE",
+            calibration_event="REJECTED",
         )
 
-    center_vals, bounds = build_safe_zone_bounds(state.stage_averages, config)
-    state.apply_calibrated_bounds(*center_vals, bounds)
+    state.apply_lens_calibration(yaw_offset, pitch_offset, config)
     print(
-        f"[KALIBRASI 5 TITIK SELESAI] "
-        f"POR_X:[{bounds.min_por_x:.3f} .. {bounds.max_por_x:.3f}] | "
-        f"POR_Y:[{bounds.min_por_y:+.3f} .. {bounds.max_por_y:+.3f}]"
+        f"[KALIBRASI 3D ANTI-SPOOF SUKSES] "
+        f"Offset Anatomi Yaw:{state.calib_yaw_offset_deg:+.2f}deg "
+        f"Pitch:{state.calib_pitch_offset_deg:+.2f}deg | "
+        f"Batas Aman: X=+-{config.half_safe_width_cm:.1f}cm, "
+        f"Atas=-{config.edge_margin_cm:.1f}cm, Touchpad={config.touchpad_end_depth_cm:.1f}cm"
     )
     return TemporalStepResult(
         banner_state=BannerState.SAFE,
-        banner_text="KALIBRASI 5 TITIK BERHASIL: ZONA PRESISI AKTIF",
+        banner_text=message,
         effective_code=IndicationCode.NORMAL,
         effective_label="PESERTA FOKUS UJIAN",
         elapsed_sec=0.0,
@@ -417,17 +609,13 @@ def evaluate_instant_indication(
     mean_luminance: float,
     global_edge_density: float,
     faces: Sequence[DetectedFace],
-    baseline_yaw: float,
-    baseline_pitch: float,
     config: DetectorConfig,
-    baseline_gaze_x: float = 0.50,
-    baseline_gaze_y: float = -0.11,
-    safe_bounds: SafeZoneBounds | None = None,
+    calib_yaw_offset_deg: float = 0.0,
+    calib_pitch_offset_deg: float = 0.0,
 ) -> tuple[IndicationCode, str]:
     """
-    Mengevaluasi indikasi instan satu frame menggunakan Unified Point-of-Regard (POR_x, POR_y)
-    sehingga baik lirikan bola mata saja maupun gerakan kepala melewati batas 1 cm luar layar
-    atau titik akhir touchpad langsung terdeteksi secara simetris.
+    Mengevaluasi indikasi instan satu frame menggunakan L-Shaped 3D Gaze Ray-Casting:
+    - IND-05 > IND-03 > IND-04 > IND-01 (>1 cm kiri/kanan) > IND-02 (>1 cm atas / >=21 cm touchpad).
     """
     if mean_luminance < config.min_luminance:
         return IndicationCode.IND_05, "KAMERA TERTUTUP / RUANGAN GELAP"
@@ -442,57 +630,47 @@ def evaluate_instant_indication(
         return IndicationCode.IND_04, "WAJAH TIDAK TERDETEKSI"
 
     primary = faces[0]
-    bounds = safe_bounds or SafeZoneBounds(
-        min_por_x=baseline_gaze_x - config.tol_gaze_x,
-        max_por_x=baseline_gaze_x + config.tol_gaze_x,
-        min_por_y=baseline_gaze_y - config.tol_gaze_up,
-        max_por_y=baseline_gaze_y + config.tol_gaze_down,
+    hit = project_gaze_3d(
+        primary,
+        config,
+        calib_yaw_offset_deg=calib_yaw_offset_deg,
+        calib_pitch_offset_deg=calib_pitch_offset_deg,
     )
 
-    por_x, por_y = compute_point_of_regard(
-        yaw=primary.yaw,
-        pitch=primary.pitch,
-        gaze_x=primary.gaze_x,
-        gaze_y=primary.gaze_y,
-        ear=primary.ear,
-        baseline_yaw=baseline_yaw,
-        baseline_pitch=baseline_pitch,
-        baseline_gaze_x=baseline_gaze_x,
-        baseline_gaze_y=baseline_gaze_y,
-        config=config,
-    )
+    center_head_yaw = math.degrees(math.atan2(-primary.eye_x_cm, primary.eye_z_cm))
+    center_head_pitch = math.degrees(math.atan2(-primary.eye_y_cm, primary.eye_z_cm))
+    rel_head_yaw = primary.head_yaw_deg - center_head_yaw
+    rel_head_pitch = primary.head_pitch_deg - center_head_pitch
 
-    yaw_delta = primary.yaw - baseline_yaw
-    pitch_delta = primary.pitch - baseline_pitch
-
-    if por_x < bounds.min_por_x:
+    half_safe_x = config.half_safe_width_cm
+    if hit.hit_x_cm < -half_safe_x:
         label = (
             "MENOLEH KE KIRI"
-            if yaw_delta <= -config.head_label_yaw_delta
+            if rel_head_yaw <= -config.head_label_yaw_deg
             else "MELIRIK MATA KE KIRI"
         )
         return IndicationCode.IND_01, label
 
-    if por_x > bounds.max_por_x:
+    if hit.hit_x_cm > half_safe_x:
         label = (
             "MENOLEH KE KANAN"
-            if yaw_delta >= config.head_label_yaw_delta
+            if rel_head_yaw >= config.head_label_yaw_deg
             else "MELIRIK MATA KE KANAN"
         )
         return IndicationCode.IND_01, label
 
-    if por_y < bounds.min_por_y:
+    if hit.screen_y_cm < -config.edge_margin_cm:
         label = (
             "MENDONGAK (LIHAT ATAS)"
-            if pitch_delta <= -config.head_label_pitch_delta
+            if rel_head_pitch <= -config.head_label_pitch_deg
             else "MELIRIK MATA KE ATAS"
         )
         return IndicationCode.IND_02, label
 
-    if por_y > bounds.max_por_y:
+    if hit.on_keyboard_deck and hit.deck_z_cm >= config.touchpad_end_depth_cm:
         label = (
             "MENUNDUK (LEWAT TOUCHPAD)"
-            if pitch_delta >= config.head_label_pitch_delta
+            if rel_head_pitch >= config.head_label_pitch_deg
             else "MELIRIK BAWAH (LEWAT TOUCHPAD)"
         )
         return IndicationCode.IND_02, label
@@ -513,9 +691,13 @@ def step_temporal_monitor(
     """
     if not state.is_calibrated:
         state.clear_active_behavior()
+        prompt = (
+            state.last_calibration_error
+            or "TEKAN [SPASI/C]: TATAP LENSA KAMERA FISIK (ANTI-SPOOF)"
+        )
         return TemporalStepResult(
             banner_state=BannerState.UNCALIBRATED,
-            banner_text="TEKAN [SPASI] ATAU [C] UNTUK KALIBRASI 5 TITIK LAPTOP",
+            banner_text=prompt,
             effective_code=IndicationCode.NORMAL,
             effective_label="BELUM KALIBRASI",
             elapsed_sec=0.0,
@@ -587,7 +769,7 @@ def step_temporal_monitor(
 
 
 class FaceMeshDetector:
-    """Wrapper MediaPipe Tasks FaceLandmarker (RunningMode.VIDEO) dengan context manager."""
+    """Wrapper MediaPipe FaceLandmarker (RunningMode.VIDEO + 4x4 3D Metric Matrix)."""
 
     def __init__(self, config: DetectorConfig) -> None:
         self._config = config
@@ -600,6 +782,7 @@ class FaceMeshDetector:
             min_face_detection_confidence=config.min_detection_confidence,
             min_face_presence_confidence=config.min_presence_confidence,
             min_tracking_confidence=config.min_tracking_confidence,
+            output_facial_transformation_matrixes=True,
         )
         self._landmarker = vision.FaceLandmarker.create_from_options(options)
 
@@ -615,7 +798,7 @@ class FaceMeshDetector:
         self.close()
 
     def detect_faces(self, enhanced_bgr: UInt8Image, timestamp_ms: int) -> list[DetectedFace]:
-        """Mendeteksi dan mengurutkan wajah beserta iris dari frame BGR hasil CLAHE."""
+        """Mendeteksi dan mengurutkan wajah beserta matriks 3D & iris dari frame CLAHE."""
         if timestamp_ms <= self._last_timestamp_ms:
             timestamp_ms = self._last_timestamp_ms + 1
         self._last_timestamp_ms = timestamp_ms
@@ -625,7 +808,13 @@ class FaceMeshDetector:
         result = self._landmarker.detect_for_video(mp_image, timestamp_ms)
 
         height, width, _ = enhanced_bgr.shape
-        return extract_faces_sorted_by_area(result.face_landmarks, width, height)
+        return extract_faces_sorted_by_area(
+            result.face_landmarks,
+            width,
+            height,
+            transformation_matrices=result.facial_transformation_matrixes,
+            config=self._config,
+        )
 
     def close(self) -> None:
         """Menutup resource native MediaPipe FaceLandmarker."""

@@ -1,4 +1,4 @@
-"""Entry point utama akuisisi webcam & koordinasi loop pemantauan ujian online (Mode 1: Teori)."""
+"""Entry point akuisisi webcam & koordinasi loop 3D Anti-Spoof Ray-Casting (Mode 1: Teori)."""
 
 import threading
 import time
@@ -12,7 +12,7 @@ from src.config import DetectorConfig, MonitoringState
 from src.detector import (
     DetectedFace,
     FaceMeshDetector,
-    advance_five_point_calibration,
+    advance_lens_calibration,
     evaluate_instant_indication,
     smooth_primary_face_pose,
     step_temporal_monitor,
@@ -26,17 +26,19 @@ WINDOW_TITLE: str = "Sistem Deteksi Indikasi Kecurangan Ujian Online - PCD (Mode
 
 
 def _play_calibration_cue(event: str | None) -> None:
-    """Memainkan bunyi bip singkat non-blocking agar transisi tahap 1-5 terdengar jelas."""
+    """Memainkan sinyal suara non-blocking saat mulai, sukses, atau ditolak Anti-Spoof."""
     if event is None:
         return
 
     def _sound_worker() -> None:
         try:
-            if event == "NEXT_STAGE":
+            if event == "STARTED":
                 winsound.Beep(880, 90)
             elif event == "COMPLETED":
                 winsound.Beep(1180, 110)
                 winsound.Beep(1480, 160)
+            elif event == "REJECTED":
+                winsound.Beep(320, 260)
         except RuntimeError:
             pass
 
@@ -74,9 +76,14 @@ def run_monitoring_session(camera_index: int = 0) -> None:
             "Pastikan webcam terhubung dan tidak sedang dipakai aplikasi lain."
         )
 
-    print("=== SISTEM MONITORING UJIAN ONLINE (MODE 1: CBT PAPERLESS / TEORI) ===")
+    print("=== SISTEM MONITORING UJIAN ONLINE (MODE 1: 3D HARDWARE-LOCKED RAY-CASTING) ===")
     print(
-        "Kontrol: [SPASI / C] Kalibrasi 5 Titik Fisik Laptop | "
+        f"Profil Perangkat: Layar 14.0\" 16:10 ({config.screen_width_cm:.1f}x"
+        f"{config.screen_height_cm:.1f} cm) | Margin Luar: {config.edge_margin_cm:.1f} cm | "
+        f"Akhir Touchpad: {config.touchpad_end_depth_cm:.1f} cm"
+    )
+    print(
+        "Kontrol: [SPASI / C] Kalibrasi Lensa Kamera (Anti-Spoof 2s) | "
         "[R] Reset Skor & Timer | [Q] Keluar"
     )
 
@@ -105,7 +112,7 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                 raw_faces = detector.detect_faces(frame_pcd.enhanced_bgr, timestamp_ms)
                 faces = smooth_primary_face_pose(raw_faces, state, config.ema_alpha)
 
-                cal_step = advance_five_point_calibration(state, raw_faces, now_mono, config)
+                cal_step = advance_lens_calibration(state, raw_faces, now_mono, config)
                 if cal_step is not None:
                     step_result = cal_step
                     _play_calibration_cue(cal_step.calibration_event)
@@ -114,12 +121,9 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                         mean_luminance=frame_pcd.mean_luminance,
                         global_edge_density=frame_pcd.global_edge_density,
                         faces=faces,
-                        baseline_yaw=state.baseline_yaw,
-                        baseline_pitch=state.baseline_pitch,
                         config=config,
-                        baseline_gaze_x=state.baseline_gaze_x,
-                        baseline_gaze_y=state.baseline_gaze_y,
-                        safe_bounds=state.safe_bounds,
+                        calib_yaw_offset_deg=state.calib_yaw_offset_deg,
+                        calib_pitch_offset_deg=state.calib_pitch_offset_deg,
                     )
                     step_result = step_temporal_monitor(
                         state=state,
@@ -140,6 +144,7 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                     frame_pcd=frame_pcd,
                     roi_pcd=roi_pcd,
                     min_luminance=config.min_luminance,
+                    config=config,
                 )
 
                 if step_result.should_log_evidence:
@@ -160,13 +165,13 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                     break
                 if key in (ord("c"), ord(" ")):
                     if len(raw_faces) == 1:
-                        state.start_five_point_calibration(
-                            now_mono, config.calibration_stage_sec
+                        state.start_lens_calibration(
+                            now_mono, config.calibration_duration_sec
                         )
-                        _play_calibration_cue("NEXT_STAGE")
+                        _play_calibration_cue("STARTED")
                         print(
-                            "[KALIBRASI 5 TITIK DIMULAI] "
-                            "Ikuti 5 panduan arah: Tengah -> Kiri -> Kanan -> Atas -> Akhir Touchpad."
+                            "[KALIBRASI DIMULAI] Tatap lurus Lensa Fisik Webcam di bezel atas "
+                            "selama 2.0 detik (Anti-Spoof Aktif)."
                         )
                     else:
                         print(

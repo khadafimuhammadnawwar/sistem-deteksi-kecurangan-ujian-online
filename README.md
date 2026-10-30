@@ -1,73 +1,44 @@
 # Sistem Deteksi Indikasi Kecurangan pada Ujian Online Berbasis Citra Digital (Mode 1: CBT Paperless / Teori)
 
 Proyek Akhir **Praktikum Pengolahan Citra Digital (Semester 5 — D4 Teknik Informatika PNL)**.  
-Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / Non-Auto Banning)* untuk ujian teori berbasis komputer tanpa kertas buram. Sistem menggabungkan pipeline matematis **Pengolahan Citra Digital (PCD)** klasik dengan ekstraksi **478 titik landmark wajah & pupil iris** secara *real-time*.
+Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / Non-Auto Banning)* untuk ujian teori berbasis komputer tanpa kertas buram. Sistem menggabungkan pipeline matematis **Pengolahan Citra Digital (PCD)** klasik dengan **L-Shaped 3D Gaze Ray-Casting (`cm`)** dan **5-Layer Anti-Spoof Lens Calibration**.
 
 ---
 
 ## Fitur Utama (Mode 1: Ujian Teori)
 1. **Pipeline Pengolahan Citra Digital (PCD) Aktif:**
-   - Analisis Luminansi Global ($Y = 0.299R + 0.587G + 0.114B$) untuk deteksi ruangan gelap/kamera ditutup benda gelap ($\mu_Y < 35.0$).
+   - Analisis Luminansi Global ($Y = 0.299R + 0.587G + 0.114B$) untuk deteksi ruangan gelap/oklusi gelap ($\mu_Y < 35.0$).
    - *Global Canny Edge Density* ($< 1.0\%$) untuk mendeteksi kamera ditutup benda polos terang (kertas putih/tisu/lakban).
    - Peningkatan kontras adaptif **CIE-LAB CLAHE** (`clipLimit=2.5, tileGridSize=(8,8)`) pada kanal *Lightness* ($L$) sebelum ekstraksi wajah.
    - Visualisasi *real-time* **Grid 2x2 ROI Wajah ($110\times 110$):** `1.Gray+CLAHE`, `2.Gauss 5x5`, `3.Otsu Biner`, dan `4.Canny Edge`.
-2. **Deteksi Orientasi Kepala & Lirikan Bola Mata (*Iris Gaze Tracking*):**
-   - Mendeteksi menoleh kiri/kanan (`IND-01`), menunduk/mendongak (`IND-02`), lirikan bola mata kiri/kanan (`IND-01: MELIRIK MATA`), serta lirikan bola mata atas/bawah (`IND-02: MELIRIK MATA`).
-   - Dilengkapi **EMA Signal Smoothing ($\alpha = 0.35$)** peredam getaran koordinat dan **EAR Blink Guard ($\text{EAR} \ge 0.15$)** agar kedipan mata normal tidak dianggap kecurangan.
-3. **Multi-Face Area Sorting & Calibration Gate:**
-   - Wajah peserta utama selalu diurutkan dari luas *bounding box* terbesar (`Wajah #1`).
-   - Pemotongan *Trust Score* dikunci sampai peserta menekan tombol kalibrasi **`[C]`** di awal sesi.
+2. **Hardware-Locked 3D Gaze Ray-Casting (`cm`) & Anti-Spoof:**
+   - Geometri fisik perangkat dikunci di sisi sistem (**Lenovo IdeaPad Slim 5 14IMH9**: layar `14.0"` `16:10` $30.16 \times 18.85\text{ cm}$ + dek keyboard/touchpad $21.0\text{ cm}$), **mustahil diperlebar/diakali peserta**.
+   - Memicu kuning seketika saat pandangan keluar **`> 1.0 cm`** di sisi kiri, kanan, atau atas bezel layar (`IND-01` / `IND-02`), maupun tepat mencapai ujung akhir bawah touchpad **`>= 21.0 cm`** (`IND-02`).
+   - Dilengkapi **EMA Smoothing ($\alpha = 0.42$)**, kompensasi **VOR (Vestibulo-Ocular Reflex)**, serta **EAR Blink Guard ($\text{EAR} \ge 0.12$)**.
+3. **5-Layer Anti-Spoof Lens Calibration (`2.0 Detik`):**
+   - Peserta cukup menatap lurus **Lensa Fisik Webcam** di bezel atas selama 2 detik. Jika peserta mencoba melirik ke samping/atas/bawah atau menoleh saat kalibrasi, sistem **menolak kalibrasi secara otomatis**.
 4. **Audit Bukti Otomatis (`Cooldown 5.0s`):**
    - Menyimpan tangkapan layar ber-anotasi ke `bukti_indikasi/*.jpg` dan mencatat riwayat ke `log_indikasi_ujian.csv`.
 
 ---
 
-## Struktur Direktori
-```text
-├── AGENTS.md                  # Direktif arsitektur & kontrak aturan proyek (Antigravity IDE)
-├── ARCHITECTURE.md            # Desain berlapis, core invariants, state machine, & kompensasi VOR
-├── PRD.md                     # Spesifikasi produk, rumus matematis PCD, & matriks aturan
-├── README.md                  # Panduan penggunaan & protokol pengujian akurasi
-├── requirements.txt           # Daftar dependensi Python
-├── main.py                    # Entry point akuisisi webcam & loop pemantauan
-├── src/
-│   ├── config.py              # Enum kode indikasi, konstanta, & state EMA/kalibrasi
-│   ├── pcd_pipeline.py        # Fungsi murni LAB-CLAHE, Gaussian 5x5, Otsu, & Canny
-│   ├── detector.py            # FaceLandmarker (478 titik), geometri kepala/iris VOR, & timer
-│   ├── logger.py              # Pencatatan bukti .jpg & .csv dengan context manager
-│   └── ui_dashboard.py        # Rendering dashboard 920x480 & Grid 2x2 PCD
-└── tests/
-    └── test_detector_logic.py # Unit testing otomatis berbasis pytest
-```
-
----
-
 ## Cara Menjalankan Aplikasi
 
-1. **Aktifkan Virtual Environment (PowerShell):**
-   ```powershell
-   .\venv\Scripts\Activate.ps1
-   ```
-   *(Atau jalankan langsung menggunakan interpreter `.\venv\Scripts\python.exe`).*
-
-2. **Jalankan Sistem Pemantauan:**
+1. **Jalankan Sistem Pemantauan (PowerShell):**
    ```powershell
    .\venv\Scripts\python.exe main.py
    ```
-   *(Pada eksekusi pertama, model resmi `models/face_landmarker.task` diunduh otomatis).*
+   *(Atau aktifkan environment terlebih dahulu dengan `.\venv\Scripts\Activate.ps1`).*
 
-3. **Kontrol Tombol & Kalibrasi 5 Titik saat Aplikasi Berjalan:**
-   - **`SPASI` atau `C`** : Memulai **Kalibrasi 5 Titik Fisik Laptop (~10 detik)** disertai panduan panah & bunyi *beep* tiap berganti tahap:
-     1. `1/5` Tatap **Tengah Layar Fisik Laptop**
-     2. `2/5` Tatap **Bingkai Tepi Kiri Layar**
-     3. `3/5` Tatap **Bingkai Tepi Kanan Layar**
-     4. `4/5` Tatap **Bezel Atas Layar / Lensa Webcam**
-     5. `5/5` Tatap **Titik Akhir Bawah Touchpad** (tunggu bunyi *double-beep* tanda selesai)
+2. **Kontrol Tombol & Prosedur Kalibrasi Anti-Spoof:**
+   - **`SPASI` atau `C`** : Mulai **Kalibrasi Lensa Fisik Webcam (2.0 detik)**. Tatap tepat ke lubang lensa kamera di bezel atas layar sampai terdengar *double-beep* sukses (jika coba melirik jauh, terdengar *low-beep* dan kalibrasi ditolak).
    - **`R`** : Reset *Trust Score* kembali ke `100%` dan nolkan penghitung indikasi.
    - **`Q`** : Keluar dan tutup kamera dengan aman.
+   - *Catatan HUD Bawah:* Koordinat titik pandang ditampilkan langsung dalam sentimeter (`X:+0.0cm | Y:+9.5cm | Z:43cm` saat di layar, atau `Touchpad:14.2/21cm` saat melihat area keyboard/touchpad).
 
-4. **Menjalankan Unit Test:**
+3. **Menjalankan Verifikasi & Unit Test:**
    ```powershell
+   .\venv\Scripts\python.exe -m compileall main.py src tests
    .\venv\Scripts\python.exe -m pytest tests/test_detector_logic.py -v
    ```
 
@@ -75,17 +46,14 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
 
 ## Protokol Pengujian Mandiri & Tabel Evaluasi Laporan PCD
 
-Gunakan matriks skenario berikut saat mengambil data Bab Hasil & Pembahasan laporan praktikum (ulangi tiap skenario minimal 5–10 kali pada pencahayaan terang dan redup):
-
 | Kode Uji | Skenario Perilaku | Durasi Tahan | Kode Harapan | Hasil Aktual (TP / FP / FN) |
 | :---: | :--- | :---: | :---: | :--- |
-| **UJI-01** | Fokus menghadap layar & berkedip wajar | $10.0\text{ s}$ | `NORMAL` | ... |
-| **UJI-02** | Menolehkan kepala ke kiri / kanan | $\ge 2.5\text{ s}$ | `IND-01` (Menoleh) | ... |
-| **UJI-03** | Kepala diam lurus, bola mata melirik tajam ke kiri / kanan | $\ge 2.0\text{ s}$ | `IND-01` (Melirik Mata) | ... |
-| **UJI-04** | Menundukkan kepala ke pangkuan / mendongak ke atas | $\ge 3.0\text{ s}$ | `IND-02` (Menunduk/Mendongak) | ... |
-| **UJI-05** | Kepala diam lurus, bola mata melirik tajam ke atas / bawah ekstrem | $\ge 2.0\text{ s}$ | `IND-02` (Melirik Mata) | ... |
+| **UJI-01** | Fokus menatap seluruh sudut layar, keyboard, & berkedip wajar | $10.0\text{ s}$ | `NORMAL` | ... |
+| **UJI-02** | Menolehkan kepala keluar $> 1\text{ cm}$ kiri / kanan layar | $\ge 2.5\text{ s}$ | `IND-01` (Menoleh) | ... |
+| **UJI-03** | Kepala diam, bola mata melirik $> 1\text{ cm}$ di luar kiri / kanan layar | $\ge 2.5\text{ s}$ | `IND-01` (Melirik Mata) | ... |
+| **UJI-04** | Menunduk melewati ujung akhir touchpad ($\ge 21\text{ cm}$) / mendongak $> 1\text{ cm}$ atas layar | $\ge 3.0\text{ s}$ | `IND-02` (Menunduk/Mendongak) | ... |
+| **UJI-05** | Kepala diam, bola mata melirik $> 1\text{ cm}$ atas bezel / lewat ujung akhir touchpad | $\ge 2.5\text{ s}$ | `IND-02` (Melirik Mata) | ... |
 | **UJI-06** | Orang kedua masuk ke tangkapan kamera | $\ge 1.0\text{ s}$ | `IND-03` (>1 Orang) | ... |
 | **UJI-07** | Peserta meninggalkan kursi (latar ruangan terlihat) | $\ge 3.0\text{ s}$ | `IND-04` (Wajah Hilang) | ... |
 | **UJI-08** | Lensa kamera ditutup telapak tangan gelap | $\ge 2.0\text{ s}$ | `IND-05` (Gelap $\mu_Y < 35$) | ... |
 | **UJI-09** | Lensa kamera ditutup kertas HVS putih / tisu terang | $\ge 2.0\text{ s}$ | `IND-05` (Oklusi Canny $< 1\%$) | ... |
-
