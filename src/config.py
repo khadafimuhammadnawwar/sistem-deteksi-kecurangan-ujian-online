@@ -92,11 +92,11 @@ class DetectorConfig:
     ema_alpha: float = 0.42
     neutral_gaze_x: float = 0.520
     neutral_gaze_y: float = -0.130
-    eye_yaw_gain_deg: float = 500.0
-    eye_pitch_up_gain_deg: float = 380.0
-    eye_pitch_down_gain_deg: float = 380.0
-    head_label_yaw_deg: float = 10.0
-    head_label_pitch_deg: float = 9.0
+    eye_yaw_gain_deg: float = 320.0
+    eye_pitch_up_gain_deg: float = 240.0
+    eye_pitch_down_gain_deg: float = 260.0
+    head_label_yaw_deg: float = 15.0
+    head_label_pitch_deg: float = 14.0
     min_ear_for_gaze: float = 0.12
 
     # Parameter Kalibrasi 1-Titik Lensa Kamera & 5-Layer Anti-Spoof Gate
@@ -108,10 +108,10 @@ class DetectorConfig:
     min_calib_ear: float = 0.16
     min_calib_gaze_y: float = -0.200
     max_calib_gaze_y: float = -0.065
-    max_calib_head_yaw_error_deg: float = 12.0
+    max_calib_head_yaw_error_deg: float = 10.0
     min_calib_head_pitch_error_deg: float = -24.0  # Mengizinkan kemiringan engsel layar 90-115 deg
     max_calib_head_pitch_error_deg: float = 12.0
-    max_calib_offset_yaw_deg: float = 11.5
+    max_calib_offset_yaw_deg: float = 2.5  # Sumbu horizontal laptop simetris fisik X=0, tidak boleh dibelokkan
     min_calib_offset_pitch_deg: float = -12.0
     max_calib_offset_pitch_deg: float = 24.0
     max_calib_std_yaw_deg: float = 3.5
