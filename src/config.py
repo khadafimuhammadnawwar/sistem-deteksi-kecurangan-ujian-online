@@ -80,6 +80,8 @@ class DetectorConfig:
     hinge_y_cm: float = 20.20
     touchpad_end_depth_cm: float = 21.00
     edge_margin_cm: float = 1.00
+    edge_margin_x_cm: float = 7.00  # Margin toleransi horizontal (1.0 cm margin + 6.0 cm area pandang layar)
+    edge_margin_top_cm: float = 7.00  # Margin toleransi atas (1.0 cm margin + 6.0 cm area pandang layar)
     lid_angle_deg: float = 90.0
 
     # Parameter MediaPipe 3D Pose, Iris Socket Angular Gain, & EMA
@@ -137,8 +139,8 @@ class DetectorConfig:
 
     @property
     def half_safe_width_cm(self) -> float:
-        """Setengah lebar zona aman horizontal (setengah lebar layar + 1.0 cm)."""
-        return (self.screen_width_cm * 0.5) + self.edge_margin_cm
+        """Setengah lebar zona aman horizontal (setengah lebar layar 15.08 cm + 7.00 cm = 22.08 cm)."""
+        return (self.screen_width_cm * 0.5) + self.edge_margin_x_cm
 
     def threshold_for(self, code: IndicationCode, behavior_label: str = "") -> float:
         """Mengembalikan ambang durasi (detik) berdasarkan kode dan subtipe perilaku."""

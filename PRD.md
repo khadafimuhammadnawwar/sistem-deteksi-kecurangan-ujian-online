@@ -56,9 +56,9 @@ Evaluasi indikasi diproses setelah peserta lulus **Kalibrasi Lensa Anti-Spoof** 
 | **1** | **IND-05** | Kamera Tertutup / Oklusi | $\mu_Y < 35.0$ **atau** (*Global Edge* $< 1.0\%$ & wajah $= 0$) | $\ge 2.0\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
 | **2** | **IND-03** | Terdeteksi >1 Orang | Jumlah wajah $> 1$ | $\ge 1.0\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
 | **3** | **IND-04** | Wajah Tidak Terdeteksi | Jumlah wajah $= 0$ (pencahayaan & tepi normal) | $\ge 3.0\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
-| **4** | **IND-01** | Menoleh / Melirik Kiri-Kanan | $|X_{\text{hit}}| > 16.08\text{ cm}$ ($\frac{30.16}{2} + 1.0\text{ cm}$ di luar kiri/kanan layar) | $\ge 2.5\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
-| **5** | **IND-02** | Atas Layar / Lewat Touchpad | $Y_{\text{scr}} < -1.0\text{ cm}$ (atas bezel) **atau** $Z_{\text{deck}} \ge 21.0\text{ cm}$ (akhir touchpad) | Kepala $\ge 3.0\text{ s}$ / Mata $\ge 2.5\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
-| **6** | **NORMAL** | Fokus Layar & Keyboard | Tepat 1 wajah, $|X_{\text{hit}}| \le 16.08\text{ cm}$, $-1.0 \le Y_{\text{scr}} \le 20.2\text{ cm}$, $Z_{\text{deck}} < 21.0\text{ cm}$ | *Real-time* | Banner Hijau, Reset Timer setelah *grace period* $0.3\text{ s}$ |
+| **4** | **IND-01** | Menoleh / Melirik Kiri-Kanan | $|X_{\text{hit}}| > 22.08\text{ cm}$ ($\frac{30.16}{2} + 7.0\text{ cm}$ area pandang layar) | $\ge 2.5\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
+| **5** | **IND-02** | Atas Layar / Lewat Touchpad | $Y_{\text{scr}} < -7.0\text{ cm}$ (atas layar) **atau** $Z_{\text{deck}} \ge 21.0\text{ cm}$ (akhir touchpad) | Kepala $\ge 3.0\text{ s}$ / Mata $\ge 2.5\text{ s}$ | Trust Score $-5\%$, Banner Merah, Simpan Bukti JPG & Log CSV |
+| **6** | **NORMAL** | Fokus Layar & Keyboard | Tepat 1 wajah, $|X_{\text{hit}}| \le 22.08\text{ cm}$, $-7.0 \le Y_{\text{scr}} \le 20.2\text{ cm}$, $Z_{\text{deck}} < 21.0\text{ cm}$ | *Real-time* | Banner Hijau, Reset Timer setelah *grace period* $0.3\text{ s}$ |
 
 *Keamanan Kalibrasi 5-Layer Anti-Spoof (`[SPASI]` / `[C]`, durasi `2.0 s`):*
 - Peserta diminta menatap lurus **Lensa Fisik Webcam `(0, 0, 0)`** hanya untuk mengukur offset anatomi *Angle-Kappa* alami serta sudut kemiringan engsel layar ($90^\circ\text{–}115^\circ$).

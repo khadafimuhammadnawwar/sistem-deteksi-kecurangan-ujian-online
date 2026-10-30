@@ -671,7 +671,7 @@ def evaluate_instant_indication(
         )
         return IndicationCode.IND_01, label
 
-    if hit.screen_y_cm < -config.edge_margin_cm:
+    if hit.screen_y_cm < -config.edge_margin_top_cm:
         label = (
             "MENDONGAK (LIHAT ATAS)"
             if rel_head_pitch <= -config.head_label_pitch_deg

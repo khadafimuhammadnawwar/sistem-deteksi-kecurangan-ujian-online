@@ -240,24 +240,27 @@ def test_3d_matrix_extraction_and_largest_face_sorting() -> None:
 def test_hardware_locked_3d_ray_casting_1cm_screen_and_21cm_touchpad() -> None:
     """
     Memverifikasi geometri fisik terkunci Lenovo IdeaPad Slim 5 14IMH9:
-    - Seluruh layar (30.16 x 18.85 cm) + keyboard s/d <21.0 cm touchpad -> NORMAL (Hijau).
-    - >1.0 cm di luar Kiri (-16.08 cm) dan Kanan (+16.08 cm) -> IND-01 secara simetris.
-    - >1.0 cm di atas bezel kamera (Y < -1.0 cm) -> IND-02.
+    - Seluruh layar (30.16 x 18.85 cm + 6 cm toleransi layar) + keyboard s/d <21.0 cm touchpad -> NORMAL (Hijau).
+    - Di luar batas layar Kiri (-22.08 cm) dan Kanan (+22.08 cm) -> IND-01 secara simetris.
+    - Di luar batas Atas layar (Y < -7.0 cm) -> IND-02.
     - Tepat/lewat titik akhir touchpad (deck_z >= 21.0 cm) -> IND-02.
     """
     cfg = (
         DetectorConfig()
-    )  # half_safe_width_cm = 16.08 cm, touchpad_end_depth_cm = 21.0 cm
+    )  # half_safe_width_cm = 22.08 cm, edge_margin_top_cm = 7.0 cm, touchpad_end_depth_cm = 21.0 cm
 
-    # 1. Di dalam layar (Tengah, Tepi Kiri -14.8 cm, Tepi Kanan +14.8 cm) & Keyboard (12 cm) -> NORMAL
+    # 1. Di dalam layar (Tengah, Tepi Kiri -18 cm, Tepi Kanan +18 cm, Atas Layar -4.5 cm) & Keyboard (12 cm) -> NORMAL
     safe_faces = [
         _make_face_3d(head_pitch_deg=12.0),  # Tengah layar (Y ~ +9.4 cm)
         _make_face_3d(
-            gaze_x=0.520 - (19.0 / cfg.eye_yaw_gain_deg), head_pitch_deg=10.0
-        ),  # Tepi dalam kiri (-14.5 cm)
+            gaze_x=0.520 - (23.0 / cfg.eye_yaw_gain_deg), head_pitch_deg=10.0
+        ),  # Area kiri layar (~ -17.8 cm)
         _make_face_3d(
-            gaze_x=0.520 + (19.0 / cfg.eye_yaw_gain_deg), head_pitch_deg=10.0
-        ),  # Tepi dalam kanan (+14.5 cm)
+            gaze_x=0.520 + (23.0 / cfg.eye_yaw_gain_deg), head_pitch_deg=10.0
+        ),  # Area kanan layar (~ +17.8 cm)
+        _make_face_3d(
+            eye_y_cm=0.5, gaze_y=-0.130 - (6.0 / cfg.eye_pitch_up_gain_deg)
+        ),  # Area atas layar (~ -3.9 cm)
         _make_face_3d(
             head_pitch_deg=5.0, gaze_y=-0.130 + (26.0 / cfg.eye_pitch_down_gain_deg)
         ),  # Tengah keyboard (~10 cm)
@@ -269,16 +272,16 @@ def test_hardware_locked_3d_ray_casting_1cm_screen_and_21cm_touchpad() -> None:
         code, _ = evaluate_instant_indication(180.0, 5.0, [f_ok], cfg)
         assert code == IndicationCode.NORMAL
 
-    # 2. >1 cm di luar KIRI layar (X < -16.08 cm): baik lirikan mata maupun tolehan kepala
-    f_eye_left = _make_face_3d(gaze_x=0.520 - (22.0 / cfg.eye_yaw_gain_deg))  # X_hit ~ -17.0 cm
-    f_head_left = _make_face_3d(head_yaw_deg=-22.0)
+    # 2. Di luar KIRI layar (X < -22.08 cm): baik lirikan mata maupun tolehan kepala
+    f_eye_left = _make_face_3d(gaze_x=0.520 - (30.0 / cfg.eye_yaw_gain_deg))  # X_hit ~ -24.2 cm
+    f_head_left = _make_face_3d(head_yaw_deg=-30.0)
     c_el, l_el = evaluate_instant_indication(180.0, 5.0, [f_eye_left], cfg)
     c_hl, l_hl = evaluate_instant_indication(180.0, 5.0, [f_head_left], cfg)
     assert c_el == IndicationCode.IND_01 and "MELIRIK MATA KE KIRI" == l_el
     assert c_hl == IndicationCode.IND_01 and "MENOLEH KE KIRI" == l_hl
 
-    # 3. >1 cm di luar KANAN layar (X > +16.08 cm): simetris sempurna dengan kiri!
-    f_eye_right = _make_face_3d(gaze_x=0.520 + (22.0 / cfg.eye_yaw_gain_deg))  # X_hit ~ +17.0 cm
+    # 3. Di luar KANAN layar (X > +22.08 cm): simetris sempurna dengan kiri!
+    f_eye_right = _make_face_3d(gaze_x=0.520 + (30.0 / cfg.eye_yaw_gain_deg))  # X_hit ~ +24.2 cm
     c_er, l_er = evaluate_instant_indication(180.0, 5.0, [f_eye_right], cfg)
     assert c_er == IndicationCode.IND_01 and "MELIRIK MATA KE KANAN" == l_er
 
@@ -291,10 +294,10 @@ def test_hardware_locked_3d_ray_casting_1cm_screen_and_21cm_touchpad() -> None:
         == IndicationCode.NORMAL
     )
 
-    # 5. >1 cm di ATAS bezel kamera (Y < -1.0 cm): baik dari kepala lurus maupun kepala menghadap tengah layar (+12 deg)
+    # 5. Di ATAS layar (Y < -7.0 cm): baik dari kepala lurus maupun kepala menghadap tengah layar (+12 deg)
     f_eye_up = _make_face_3d(
-        eye_y_cm=0.5, gaze_y=-0.130 - (3.0 / cfg.eye_pitch_up_gain_deg)
-    )  # Y_hit ~ -1.7 cm
+        eye_y_cm=0.5, gaze_y=-0.130 - (12.0 / cfg.eye_pitch_up_gain_deg)
+    )  # Y_hit ~ -8.4 cm
     c_up, l_up = evaluate_instant_indication(180.0, 5.0, [f_eye_up], cfg)
     assert c_up == IndicationCode.IND_02 and "ATAS" in l_up
 
@@ -302,7 +305,7 @@ def test_hardware_locked_3d_ray_casting_1cm_screen_and_21cm_touchpad() -> None:
         eye_y_cm=0.5,
         eye_z_cm=42.0,
         head_pitch_deg=12.0,
-        gaze_y=-0.130 - (14.5 / cfg.eye_pitch_up_gain_deg),  # Lirikan mata murni ke >1 cm di atas bezel saat kepala diam di tengah layar
+        gaze_y=-0.130 - (24.0 / cfg.eye_pitch_up_gain_deg),  # Lirikan mata murni ke atas luar layar saat kepala diam di tengah layar
     )
     c_cup, l_cup = evaluate_instant_indication(180.0, 5.0, [f_center_head_eye_up], cfg)
     assert c_cup == IndicationCode.IND_02 and l_cup == "MELIRIK MATA KE ATAS"
@@ -446,7 +449,7 @@ def test_vor_compensation_and_blink_guard() -> None:
     )
 
     # Menoleh kepala jauh sambil mata menyipit (EAR=0.05) -> tetap tertangkap IND-01!
-    squint_turn = _make_face_3d(head_yaw_deg=-26.0, ear=0.05)
+    squint_turn = _make_face_3d(head_yaw_deg=-32.0, ear=0.05)
     assert (
         evaluate_instant_indication(180.0, 5.0, [squint_turn], cfg)[0]
         == IndicationCode.IND_01

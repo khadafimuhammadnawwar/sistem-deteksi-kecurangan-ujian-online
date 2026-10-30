@@ -181,11 +181,11 @@ def _draw_camera_banner_and_footer(
         else:
             hud_text = (
                 f"X:{hit.hit_x_cm:+5.1f}/{config.half_safe_width_cm:.1f} | "
-                f"Y:{hit.screen_y_cm:+5.1f}[-1..20] | "
+                f"Y:{hit.screen_y_cm:+5.1f}[{-config.edge_margin_top_cm:.0f}..{config.hinge_y_cm:.0f}] | "
                 f"Z:{primary.eye_z_cm:.0f}cm"
             )
     else:
-        hud_text = "X:  -- /16.1 | Y:  -- [-1..20] | Z: -- cm"
+        hud_text = f"X:  -- /{config.half_safe_width_cm:.1f} | Y:  -- [{-config.edge_margin_top_cm:.0f}..{config.hinge_y_cm:.0f}] | Z: -- cm"
 
     cv2.putText(
         dashboard,
