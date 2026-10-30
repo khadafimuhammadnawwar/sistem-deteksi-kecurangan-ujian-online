@@ -62,7 +62,7 @@ Evaluasi indikasi diproses setelah peserta lulus **Kalibrasi Lensa Anti-Spoof** 
 
 *Keamanan Kalibrasi 5-Layer Anti-Spoof (`[SPASI]` / `[C]`, durasi `2.0 s`):*
 - Peserta diminta menatap lurus **Lensa Fisik Webcam `(0, 0, 0)`** hanya untuk mengukur offset anatomi *Angle-Kappa* alami serta sudut kemiringan engsel layar ($90^\circ\text{–}115^\circ$).
-- Kalibrasi menyaring kedipan alami sesaat ($\text{EAR} \ge 0.16$) namun **DITOLAK OTOMATIS** apabila jarak di luar `25–85 cm`, mata terus menyipit/terpejam (`< 5` sampel terbuka), pandangan bergoyang tidak stabil, kepala menoleh $> 10^\circ$, atau iris melirik ke luar rentang anatomi lensa (`calib_yaw_offset_deg` terkunci maks $\pm 2.5^\circ$). Sumbu horizontal laptop simetris fisik ($X = 0$) sehingga batas zona aman fisik `cm` **tidak pernah dapat diperlebar atau dibelokkan oleh peserta**.
+- Kalibrasi menyaring kedipan alami sesaat ($\text{EAR} \ge 0.16$) namun **DITOLAK OTOMATIS** apabila jarak di luar `25–85 cm`, mata terus menyipit/terpejam (`< 5` sampel terbuka), pandangan bergoyang tidak stabil, kepala menoleh $> 10^\circ$, atau iris melirik ke luar rentang anatomi lensa (offset yaw $> 11.5^\circ$ ditolak; offset yang dipakai `calib_yaw_offset_deg` dijepit maks $\pm 2.5^\circ$). Sumbu horizontal laptop simetris fisik ($X = 0$) sehingga batas zona aman fisik `cm` **tidak pernah dapat diperlebar atau dibelokkan oleh peserta**.
 
 ---
 

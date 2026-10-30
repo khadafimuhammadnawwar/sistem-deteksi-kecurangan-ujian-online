@@ -387,16 +387,22 @@ def validate_and_compute_lens_offset(
     yaw_offset = target_yaw_deg - (mean_hyaw + raw_eye_yaw)
     pitch_offset = target_pitch_deg - (mean_hpitch + raw_eye_pitch)
 
-    if abs(yaw_offset) > config.max_calib_offset_yaw_deg or not (
+    if abs(yaw_offset) > config.max_calib_reject_yaw_deg or not (
         config.min_calib_offset_pitch_deg
         <= pitch_offset
         <= config.max_calib_offset_pitch_deg
     ):
         return False, 0.0, 0.0, "ANTI-SPOOF: JANGAN MELIRIK, TATAP TEPAT LENSA!"
 
+    # Sumbu horizontal laptop simetris fisik (X=0): offset yaw yang dipakai dijepit kecil
+    clamped_yaw_offset = max(
+        -config.max_calib_offset_yaw_deg,
+        min(config.max_calib_offset_yaw_deg, yaw_offset),
+    )
+
     return (
         True,
-        float(yaw_offset),
+        float(clamped_yaw_offset),
         float(pitch_offset),
         "KALIBRASI 3D AKTIF: ZONA 1CM LAYAR & 21CM TOUCHPAD TERKUNCI",
     )

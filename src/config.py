@@ -111,7 +111,8 @@ class DetectorConfig:
     max_calib_head_yaw_error_deg: float = 10.0
     min_calib_head_pitch_error_deg: float = -24.0  # Mengizinkan kemiringan engsel layar 90-115 deg
     max_calib_head_pitch_error_deg: float = 12.0
-    max_calib_offset_yaw_deg: float = 2.5  # Sumbu horizontal laptop simetris fisik X=0, tidak boleh dibelokkan
+    max_calib_offset_yaw_deg: float = 2.5  # Offset yaw yang DIPAKAI (clamp): sumbu horizontal laptop simetris X=0
+    max_calib_reject_yaw_deg: float = 11.5  # Offset yaw ekstrem di atas ini DITOLAK (indikasi melirik curang)
     min_calib_offset_pitch_deg: float = -12.0
     max_calib_offset_pitch_deg: float = 24.0
     max_calib_std_yaw_deg: float = 3.5
