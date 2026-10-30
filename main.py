@@ -11,6 +11,7 @@ from src.detector import (
     DetectedFace,
     FaceMeshDetector,
     evaluate_instant_indication,
+    smooth_primary_face_pose,
     step_temporal_monitor,
 )
 from src.logger import EvidenceLogger
@@ -53,7 +54,7 @@ def run_monitoring_session(camera_index: int = 0) -> None:
         )
 
     print("=== SISTEM MONITORING UJIAN ONLINE (MODE 1: CBT PAPERLESS / TEORI) ===")
-    print("Kontrol: [C] Kalibrasi Wajah (Wajib di Awal) | [R] Reset Skor & Timer | [Q] Keluar")
+    print("Kontrol: [C] Kalibrasi Kepala & Mata | [R] Reset Skor & Timer | [Q] Keluar")
 
     try:
         with FaceMeshDetector(config) as detector:
@@ -78,12 +79,13 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                 # 2. Pra-pemrosesan PCD Global (Luminansi, Canny Global, CIE-LAB CLAHE)
                 frame_pcd = preprocess_frame_lab_clahe(mirrored_frame, clahe, config)
 
-                # 3. Deteksi Landmark Wajah & Pengurutan Luas Bounding Box
+                # 3. Deteksi Landmark Wajah & Iris + EMA Signal Smoothing
                 now_mono = time.monotonic()
                 timestamp_ms = int(now_mono * 1000)
-                faces = detector.detect_faces(frame_pcd.enhanced_bgr, timestamp_ms)
+                raw_faces = detector.detect_faces(frame_pcd.enhanced_bgr, timestamp_ms)
+                faces = smooth_primary_face_pose(raw_faces, state, config.ema_alpha)
 
-                # 4. Evaluasi Aturan Geometri & Durasi Temporal
+                # 4. Evaluasi Aturan Geometri Kepala, Iris Mata, & Durasi Temporal
                 instant_code, instant_label = evaluate_instant_indication(
                     mean_luminance=frame_pcd.mean_luminance,
                     global_edge_density=frame_pcd.global_edge_density,
@@ -91,6 +93,8 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                     baseline_yaw=state.baseline_yaw,
                     baseline_pitch=state.baseline_pitch,
                     config=config,
+                    baseline_gaze_x=state.baseline_gaze_x,
+                    baseline_gaze_y=state.baseline_gaze_y,
                 )
                 step_result = step_temporal_monitor(
                     state=state,
@@ -134,10 +138,12 @@ def run_monitoring_session(camera_index: int = 0) -> None:
                     break
                 if key == ord("c"):
                     if len(faces) == 1:
-                        state.calibrate(faces[0].yaw, faces[0].pitch)
+                        p = faces[0]
+                        state.calibrate(p.yaw, p.pitch, p.gaze_x, p.gaze_y)
                         print(
-                            f"[KALIBRASI BERHASIL] Baseline Yaw: {state.baseline_yaw:.3f} | "
-                            f"Baseline Pitch: {state.baseline_pitch:.3f}"
+                            f"[KALIBRASI BERHASIL] Yaw:{state.baseline_yaw:.3f} "
+                            f"Pitch:{state.baseline_pitch:.3f} | "
+                            f"EyeX:{state.baseline_gaze_x:.3f} EyeY:{state.baseline_gaze_y:+.3f}"
                         )
                     else:
                         print(

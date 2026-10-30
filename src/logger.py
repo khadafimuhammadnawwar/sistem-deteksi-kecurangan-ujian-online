@@ -82,3 +82,4 @@ class EvidenceLogger:
             f"({duration_sec:.1f}s) | Lum: {mean_luminance:.1f} | Skor: {trust_score:.0f}%"
         )
         return evidence_path
+

@@ -1,4 +1,4 @@
-"""Rendering antarmuka visual OpenCV Dashboard (920x480) dan Panel Grid 2x2 PCD."""
+"""Rendering antarmuka visual OpenCV Dashboard (920x480), penanda iris, dan Panel Grid 2x2 PCD."""
 
 from collections.abc import Sequence
 
@@ -19,6 +19,7 @@ CAMERA_PANEL_WIDTH: int = 640
 COLOR_PRIMARY_FACE: tuple[int, int, int] = (255, 200, 0)
 COLOR_EXTRA_FACE: tuple[int, int, int] = (0, 0, 255)
 COLOR_NOSE_DOT: tuple[int, int, int] = (0, 255, 255)
+COLOR_IRIS_DOT: tuple[int, int, int] = (255, 0, 255)
 COLOR_PANEL_BG: tuple[int, int, int] = (30, 30, 30)
 COLOR_BORDER: tuple[int, int, int] = (85, 85, 85)
 
@@ -58,7 +59,7 @@ def render_dashboard(
 
 
 def _draw_face_overlays(dashboard: UInt8Image, faces: Sequence[DetectedFace]) -> None:
-    """Menggambar bounding box terurut dan titik hidung pada panel kamera utama."""
+    """Menggambar bounding box terurut, titik hidung, dan titik pupil/iris pada wajah utama."""
     for idx, face in enumerate(faces):
         x_min, y_min, x_max, y_max = face.bbox
         box_color = COLOR_PRIMARY_FACE if idx == 0 else COLOR_EXTRA_FACE
@@ -74,6 +75,8 @@ def _draw_face_overlays(dashboard: UInt8Image, faces: Sequence[DetectedFace]) ->
         )
         if idx == 0:
             cv2.circle(dashboard, face.nose_px, 4, COLOR_NOSE_DOT, -1)
+            for pupil_pt in face.iris_px:
+                cv2.circle(dashboard, pupil_pt, 3, COLOR_IRIS_DOT, -1)
 
 
 def _draw_camera_banner_and_footer(
@@ -82,7 +85,7 @@ def _draw_camera_banner_and_footer(
     state: MonitoringState,
     step_result: TemporalStepResult,
 ) -> None:
-    """Menggambar status banner atas dan informasi kalibrasi/geometri di bagian bawah kamera."""
+    """Menggambar status banner atas dan informasi kalibrasi/geometri kepala & mata di bawah."""
     banner_color = BANNER_COLORS[step_result.banner_state]
     cv2.rectangle(dashboard, (0, 0), (CAMERA_PANEL_WIDTH, 40), banner_color, -1)
     cv2.putText(
@@ -90,37 +93,38 @@ def _draw_camera_banner_and_footer(
         step_result.banner_text,
         (12, 27),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.52,
+        0.50,
         (255, 255, 255),
         2,
     )
 
-    # Bar semi-gelap tipis di bawah agar teks kalibrasi & Yaw/Pitch selalu terbaca jelas
     cv2.rectangle(dashboard, (0, 450), (CAMERA_PANEL_WIDTH, 480), (20, 20, 20), -1)
     cal_text = (
-        "TERKALIBRASI (Mode 1: Teori)"
+        "TERKALIBRASI (Mode 1)"
         if state.is_calibrated
-        else "BELUM KALIBRASI (Tekan 'C')"
+        else "BELUM KALIBRASI [Tekan 'C']"
     )
     cal_color = (100, 255, 100) if state.is_calibrated else (0, 255, 255)
     cv2.putText(
         dashboard,
         cal_text,
-        (12, 470),
+        (10, 470),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
+        0.44,
         cal_color,
         1,
     )
 
-    current_yaw = faces[0].yaw if faces else state.baseline_yaw
-    current_pitch = faces[0].pitch if faces else state.baseline_pitch
+    yaw = faces[0].yaw if faces else state.baseline_yaw
+    pitch = faces[0].pitch if faces else state.baseline_pitch
+    gaze_x = faces[0].gaze_x if faces else state.baseline_gaze_x
+    gaze_y = faces[0].gaze_y if faces else state.baseline_gaze_y
     cv2.putText(
         dashboard,
-        f"Yaw:{current_yaw:.2f} Pitch:{current_pitch:.2f}",
-        (430, 470),
+        f"Y:{yaw:.2f} P:{pitch:.2f} | EyeX:{gaze_x:.2f} EyeY:{gaze_y:+.2f}",
+        (275, 470),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
+        0.43,
         (200, 255, 200),
         1,
     )
@@ -206,7 +210,6 @@ def _draw_pcd_side_panel(
 
     cv2.line(dashboard, (652, 175), (905, 175), COLOR_BORDER, 1)
 
-    # Grid 2x2 Visualisasi Tahapan PCD (masing-masing 110x110 piksel)
     tiles: list[tuple[int, int, UInt8Image, str]] = [
         (655, 185, roi_pcd.vis_clahe, "1.Gray+CLAHE"),
         (790, 185, roi_pcd.vis_gaussian, "2.Gauss 5x5"),

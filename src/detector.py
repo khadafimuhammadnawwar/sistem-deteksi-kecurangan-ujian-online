@@ -1,7 +1,7 @@
-"""Detektor MediaPipe Tasks FaceLandmarker, kalkulasi geometri Yaw/Pitch, dan logika temporal."""
+"""Detektor MediaPipe Tasks FaceLandmarker, kalkulasi geometri kepala & iris mata, serta logika temporal."""
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol, Self
@@ -18,13 +18,30 @@ from src.config import BannerState, DetectorConfig, IndicationCode, MonitoringSt
 
 UInt8Image = NDArray[np.uint8]
 
-# Indeks kanonik 478 titik landmark MediaPipe FaceLandmarker
+# Indeks kanonik 478 titik landmark MediaPipe FaceLandmarker (Kepala & Iris)
 NOSE_TIP_IDX: int = 1
 LEFT_CHEEK_IDX: int = 234
 RIGHT_CHEEK_IDX: int = 454
-LEFT_EYE_OUTER_IDX: int = 33
-RIGHT_EYE_OUTER_IDX: int = 263
 CHIN_IDX: int = 152
+
+# Mata sisi kiri citra tercermin (Anatomical Right Eye: sudut 33-133, kelopak 159-145, pusat iris 468)
+R_EYE_OUTER_IDX: int = 33
+R_EYE_INNER_IDX: int = 133
+R_EYE_TOP_IDX: int = 159
+R_EYE_BOTTOM_IDX: int = 145
+R_IRIS_CENTER_IDX: int = 468
+
+# Mata sisi kanan citra tercermin (Anatomical Left Eye: sudut 362-263, kelopak 386-374, pusat iris 473)
+L_EYE_INNER_IDX: int = 362
+L_EYE_OUTER_IDX: int = 263
+L_EYE_TOP_IDX: int = 386
+L_EYE_BOTTOM_IDX: int = 374
+L_IRIS_CENTER_IDX: int = 473
+
+# Alias kompatibilitas pengujian geometri kepala
+LEFT_EYE_OUTER_IDX: int = R_EYE_OUTER_IDX
+RIGHT_EYE_OUTER_IDX: int = L_EYE_OUTER_IDX
+
 BBOX_PADDING_PX: int = 15
 
 
@@ -40,13 +57,17 @@ class LandmarkPoint(Protocol):
 
 @dataclass(frozen=True)
 class DetectedFace:
-    """Data geometri dan bounding box satu wajah yang terdeteksi dalam frame."""
+    """Data geometri kepala, iris mata, dan bounding box satu wajah dalam frame."""
 
-    bbox: tuple[int, int, int, int]  # (x_min, y_min, x_max, y_max)
+    bbox: tuple[int, int, int, int]
     nose_px: tuple[int, int]
+    iris_px: tuple[tuple[int, int], tuple[int, int]]
     area: int
     yaw: float
     pitch: float
+    gaze_x: float = 0.50
+    gaze_y: float = 0.00
+    ear: float = 0.30
 
 
 @dataclass(frozen=True)
@@ -87,16 +108,12 @@ def ensure_landmarker_model(model_path: Path, model_url: str) -> Path:
 
 
 def calculate_yaw_pitch(landmarks: Sequence[LandmarkPoint]) -> tuple[float, float]:
-    """
-    Menghitung rasio geometri Yaw (horizontal) dan Pitch (vertikal) sesuai rumus PRD:
-    - Ratio_yaw   = (x_nose - x_left_cheek) / max(0.001, x_right_cheek - x_left_cheek)
-    - Ratio_pitch = (y_nose - y_eye_mid) / max(0.001, y_chin - y_eye_mid)
-    """
+    """Menghitung rasio geometri kepala Yaw (horizontal) dan Pitch (vertikal)."""
     nose = landmarks[NOSE_TIP_IDX]
     left_cheek = landmarks[LEFT_CHEEK_IDX]
     right_cheek = landmarks[RIGHT_CHEEK_IDX]
-    left_eye = landmarks[LEFT_EYE_OUTER_IDX]
-    right_eye = landmarks[RIGHT_EYE_OUTER_IDX]
+    left_eye = landmarks[R_EYE_OUTER_IDX]
+    right_eye = landmarks[L_EYE_OUTER_IDX]
     chin = landmarks[CHIN_IDX]
 
     face_width = max(0.001, right_cheek.x - left_cheek.x)
@@ -107,6 +124,46 @@ def calculate_yaw_pitch(landmarks: Sequence[LandmarkPoint]) -> tuple[float, floa
     pitch_ratio = (nose.y - eye_mid_y) / face_height
 
     return float(yaw_ratio), float(pitch_ratio)
+
+
+def calculate_iris_gaze_and_ear(
+    landmarks: Sequence[LandmarkPoint],
+) -> tuple[float, float, float]:
+    """
+    Menghitung rasio posisi pupil/iris mata (Gaze X, Gaze Y) dan Eye Aspect Ratio (EAR):
+    - Gaze X: posisi horizontal pupil di antara sudut mata kiri-kanan (0.50 = tengah).
+    - Gaze Y: posisi vertikal pupil relatif garis tengah sudut mata dibagi lebar mata (stabil saat berkedip).
+    - EAR   : rasio bukaan kelopak vertikal terhadap lebar mata untuk memfilter kedipan alami.
+    """
+    if len(landmarks) <= L_IRIS_CENTER_IDX:
+        return 0.50, 0.00, 0.30
+
+    r_width = max(0.001, landmarks[R_EYE_INNER_IDX].x - landmarks[R_EYE_OUTER_IDX].x)
+    l_width = max(0.001, landmarks[L_EYE_OUTER_IDX].x - landmarks[L_EYE_INNER_IDX].x)
+
+    r_gaze_x = (landmarks[R_IRIS_CENTER_IDX].x - landmarks[R_EYE_OUTER_IDX].x) / r_width
+    l_gaze_x = (landmarks[L_IRIS_CENTER_IDX].x - landmarks[L_EYE_INNER_IDX].x) / l_width
+    gaze_x = (r_gaze_x + l_gaze_x) / 2.0
+
+    r_corner_mid_y = (landmarks[R_EYE_OUTER_IDX].y + landmarks[R_EYE_INNER_IDX].y) / 2.0
+    l_corner_mid_y = (landmarks[L_EYE_INNER_IDX].y + landmarks[L_EYE_OUTER_IDX].y) / 2.0
+    r_gaze_y = (landmarks[R_IRIS_CENTER_IDX].y - r_corner_mid_y) / r_width
+    l_gaze_y = (landmarks[L_IRIS_CENTER_IDX].y - l_corner_mid_y) / l_width
+    gaze_y = (r_gaze_y + l_gaze_y) / 2.0
+
+    r_ear = max(0.0, landmarks[R_EYE_BOTTOM_IDX].y - landmarks[R_EYE_TOP_IDX].y) / r_width
+    l_ear = max(0.0, landmarks[L_EYE_BOTTOM_IDX].y - landmarks[L_EYE_TOP_IDX].y) / l_width
+    ear = (r_ear + l_ear) / 2.0
+
+    return float(gaze_x), float(gaze_y), float(ear)
+
+
+def _clamp_pixel(norm_x: float, norm_y: float, width: int, height: int) -> tuple[int, int]:
+    """Mengonversi koordinat ternormalisasi ke piksel utuh dalam batas dimensi citra."""
+    return (
+        min(max(0, int(norm_x * width)), width - 1),
+        min(max(0, int(norm_y * height)), height - 1),
+    )
 
 
 def extract_faces_sorted_by_area(
@@ -127,24 +184,65 @@ def extract_faces_sorted_by_area(
 
         area = max(0, x_max - x_min) * max(0, y_max - y_min)
         nose = landmarks[NOSE_TIP_IDX]
-        nose_px = (
-            min(max(0, int(nose.x * frame_width)), frame_width - 1),
-            min(max(0, int(nose.y * frame_height)), frame_height - 1),
-        )
+        nose_px = _clamp_pixel(nose.x, nose.y, frame_width, frame_height)
+
+        if len(landmarks) > L_IRIS_CENTER_IDX:
+            r_iris = landmarks[R_IRIS_CENTER_IDX]
+            l_iris = landmarks[L_IRIS_CENTER_IDX]
+            iris_px = (
+                _clamp_pixel(r_iris.x, r_iris.y, frame_width, frame_height),
+                _clamp_pixel(l_iris.x, l_iris.y, frame_width, frame_height),
+            )
+        else:
+            iris_px = (nose_px, nose_px)
+
         yaw, pitch = calculate_yaw_pitch(landmarks)
+        gaze_x, gaze_y, ear = calculate_iris_gaze_and_ear(landmarks)
 
         detected_faces.append(
             DetectedFace(
                 bbox=(x_min, y_min, x_max, y_max),
                 nose_px=nose_px,
+                iris_px=iris_px,
                 area=area,
                 yaw=yaw,
                 pitch=pitch,
+                gaze_x=gaze_x,
+                gaze_y=gaze_y,
+                ear=ear,
             )
         )
 
     detected_faces.sort(key=lambda face: face.area, reverse=True)
     return detected_faces
+
+
+def smooth_primary_face_pose(
+    faces: list[DetectedFace],
+    state: MonitoringState,
+    alpha: float,
+) -> list[DetectedFace]:
+    """Menerapkan EMA smoothing pada orientasi kepala dan iris wajah peserta utama."""
+    if not faces:
+        state.reset_ema()
+        return faces
+
+    primary = faces[0]
+    s_yaw, s_pitch, s_gx, s_gy = state.update_ema(
+        yaw=primary.yaw,
+        pitch=primary.pitch,
+        gaze_x=primary.gaze_x,
+        gaze_y=primary.gaze_y,
+        alpha=alpha,
+    )
+    smoothed_primary = replace(
+        primary,
+        yaw=s_yaw,
+        pitch=s_pitch,
+        gaze_x=s_gx,
+        gaze_y=s_gy,
+    )
+    return [smoothed_primary, *faces[1:]]
 
 
 def evaluate_instant_indication(
@@ -154,10 +252,12 @@ def evaluate_instant_indication(
     baseline_yaw: float,
     baseline_pitch: float,
     config: DetectorConfig,
+    baseline_gaze_x: float = 0.50,
+    baseline_gaze_y: float = 0.00,
 ) -> tuple[IndicationCode, str]:
     """
-    Mengevaluasi indikasi instan satu frame sesuai hierarki prioritas PRD:
-    IND-05 > IND-03 > IND-04 > IND-01 > IND-02 > NORMAL.
+    Mengevaluasi indikasi instan satu frame sesuai hierarki prioritas:
+    IND-05 > IND-03 > IND-04 > IND-01 (Kepala) > IND-02 (Kepala) > IND-01/02 (Lirikan Mata) > NORMAL.
     """
     if mean_luminance < config.min_luminance:
         return IndicationCode.IND_05, "KAMERA TERTUTUP / RUANGAN GELAP"
@@ -172,6 +272,8 @@ def evaluate_instant_indication(
         return IndicationCode.IND_04, "WAJAH TIDAK TERDETEKSI"
 
     primary = faces[0]
+
+    # 1. Evaluasi Orientasi Kepala (Head Pose)
     if primary.yaw < (baseline_yaw - config.tol_yaw):
         return IndicationCode.IND_01, "MENOLEH KE KIRI"
     if primary.yaw > (baseline_yaw + config.tol_yaw):
@@ -180,6 +282,17 @@ def evaluate_instant_indication(
         return IndicationCode.IND_02, "MENUNDUK (LIHAT BAWAH)"
     if primary.pitch < (baseline_pitch - config.tol_pitch):
         return IndicationCode.IND_02, "MENDONGAK (LIHAT ATAS)"
+
+    # 2. Evaluasi Lirikan Bola Mata (Iris Gaze) saat kepala lurus & tidak sedang berkedip
+    if primary.ear >= config.min_ear_for_gaze:
+        if primary.gaze_x < (baseline_gaze_x - config.tol_gaze_x):
+            return IndicationCode.IND_01, "MELIRIK MATA KE KIRI"
+        if primary.gaze_x > (baseline_gaze_x + config.tol_gaze_x):
+            return IndicationCode.IND_01, "MELIRIK MATA KE KANAN"
+        if primary.gaze_y < (baseline_gaze_y - config.tol_gaze_up):
+            return IndicationCode.IND_02, "MELIRIK MATA KE ATAS"
+        if primary.gaze_y > (baseline_gaze_y + config.tol_gaze_down):
+            return IndicationCode.IND_02, "MELIRIK MATA KE BAWAH"
 
     return IndicationCode.NORMAL, "PESERTA FOKUS UJIAN"
 
@@ -224,7 +337,6 @@ def step_temporal_monitor(
             should_log_evidence=False,
         )
 
-    # Perilaku mencurigakan terdeteksi pada frame saat ini
     state.normal_since_time = None
     if state.active_code != instant_code or state.behavior_start_time is None:
         state.active_code = instant_code
@@ -234,7 +346,7 @@ def step_temporal_monitor(
         state.active_label = instant_label
 
     elapsed_sec = max(0.0, now_monotonic - state.behavior_start_time)
-    limit_sec = config.threshold_for(state.active_code)
+    limit_sec = config.threshold_for(state.active_code, state.active_label)
 
     if elapsed_sec < limit_sec:
         return TemporalStepResult(
@@ -300,7 +412,7 @@ class FaceMeshDetector:
         self.close()
 
     def detect_faces(self, enhanced_bgr: UInt8Image, timestamp_ms: int) -> list[DetectedFace]:
-        """Mendeteksi dan mengurutkan wajah dari frame BGR hasil peningkatan kontras CLAHE."""
+        """Mendeteksi dan mengurutkan wajah beserta iris dari frame BGR hasil CLAHE."""
         if timestamp_ms <= self._last_timestamp_ms:
             timestamp_ms = self._last_timestamp_ms + 1
         self._last_timestamp_ms = timestamp_ms

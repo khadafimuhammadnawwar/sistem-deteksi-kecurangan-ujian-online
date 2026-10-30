@@ -14,11 +14,11 @@ DEFAULT_LOG_FILE: Path = Path("log_indikasi_ujian.csv")
 
 
 class IndicationCode(StrEnum):
-    """Kode standar indikasi perilaku ujian sesuai spesifikasi PRD."""
+    """Kode standar indikasi perilaku ujian sesuai spesifikasi PRD & AGENTS.md."""
 
     NORMAL = "NORMAL"
-    IND_01 = "IND-01"  # Menoleh Kiri / Kanan
-    IND_02 = "IND-02"  # Menunduk / Mendongak Vertikal
+    IND_01 = "IND-01"  # Penyimpangan Horizontal (Menoleh / Melirik Mata Kiri-Kanan)
+    IND_02 = "IND-02"  # Penyimpangan Vertikal (Menunduk-Mendongak / Melirik Mata Atas-Bawah)
     IND_03 = "IND-03"  # Terdeteksi >1 Orang
     IND_04 = "IND-04"  # Wajah Tidak Terdeteksi
     IND_05 = "IND-05"  # Kamera Tertutup / Gelap / Oklusi Polos
@@ -43,7 +43,7 @@ class IntegrityLevel(StrEnum):
 
 @dataclass(frozen=True)
 class DetectorConfig:
-    """Parameter konfigurasi pengolahan citra, geometri wajah, dan aturan temporal."""
+    """Parameter konfigurasi pengolahan citra, geometri kepala/mata, EMA, dan aturan temporal."""
 
     frame_width: int = 640
     frame_height: int = 480
@@ -58,17 +58,23 @@ class DetectorConfig:
     min_luminance: float = 35.0
     min_global_edge_density: float = 1.0
 
-    # Parameter Geometri Landmark Wajah
+    # Parameter Geometri Landmark Kepala, Iris Mata, & EMA Smoothing
     max_num_faces: int = 3
     min_detection_confidence: float = 0.6
     min_presence_confidence: float = 0.6
     min_tracking_confidence: float = 0.6
+    ema_alpha: float = 0.35
     tol_yaw: float = 0.15
     tol_pitch: float = 0.08
+    tol_gaze_x: float = 0.085
+    tol_gaze_up: float = 0.055
+    tol_gaze_down: float = 0.085
+    min_ear_for_gaze: float = 0.15
 
     # Parameter Temporal (Detik) & Penilaian Trust Score
     thresh_yaw_sec: float = 2.5
     thresh_pitch_sec: float = 3.0
+    thresh_gaze_sec: float = 2.0
     thresh_multiface_sec: float = 1.0
     thresh_absence_sec: float = 3.0
     thresh_dark_sec: float = 2.0
@@ -82,8 +88,11 @@ class DetectorConfig:
     evidence_dir: Path = DEFAULT_EVIDENCE_DIR
     log_file: Path = DEFAULT_LOG_FILE
 
-    def threshold_for(self, code: IndicationCode) -> float:
-        """Mengembalikan ambang durasi (detik) berdasarkan kode indikasi."""
+    def threshold_for(self, code: IndicationCode, behavior_label: str = "") -> float:
+        """Mengembalikan ambang durasi (detik) berdasarkan kode dan subtipe perilaku."""
+        if "MELIRIK MATA" in behavior_label:
+            return self.thresh_gaze_sec
+
         thresholds: dict[IndicationCode, float] = {
             IndicationCode.IND_01: self.thresh_yaw_sec,
             IndicationCode.IND_02: self.thresh_pitch_sec,
@@ -96,10 +105,16 @@ class DetectorConfig:
 
 @dataclass
 class MonitoringState:
-    """State dinamis sesi pemantauan peserta ujian."""
+    """State dinamis sesi pemantauan peserta ujian termasuk sinyal terhaluskan EMA."""
 
     baseline_yaw: float = 0.50
     baseline_pitch: float = 0.38
+    baseline_gaze_x: float = 0.50
+    baseline_gaze_y: float = 0.00
+    smoothed_yaw: float | None = None
+    smoothed_pitch: float | None = None
+    smoothed_gaze_x: float | None = None
+    smoothed_gaze_y: float | None = None
     is_calibrated: bool = False
     trust_score: float = 100.0
     total_flags: int = 0
@@ -109,10 +124,62 @@ class MonitoringState:
     normal_since_time: float | None = None
     last_logged_time: float | None = None
 
-    def calibrate(self, yaw: float, pitch: float) -> None:
-        """Menetapkan titik acuan orientasi kepala peserta dan mereset timer."""
+    def update_ema(
+        self,
+        yaw: float,
+        pitch: float,
+        gaze_x: float,
+        gaze_y: float,
+        alpha: float,
+    ) -> tuple[float, float, float, float]:
+        """Menghaluskan sinyal geometri kepala dan iris menggunakan Exponential Moving Average."""
+        if (
+            self.smoothed_yaw is None
+            or self.smoothed_pitch is None
+            or self.smoothed_gaze_x is None
+            or self.smoothed_gaze_y is None
+        ):
+            self.smoothed_yaw = yaw
+            self.smoothed_pitch = pitch
+            self.smoothed_gaze_x = gaze_x
+            self.smoothed_gaze_y = gaze_y
+        else:
+            inv = 1.0 - alpha
+            self.smoothed_yaw = alpha * yaw + inv * self.smoothed_yaw
+            self.smoothed_pitch = alpha * pitch + inv * self.smoothed_pitch
+            self.smoothed_gaze_x = alpha * gaze_x + inv * self.smoothed_gaze_x
+            self.smoothed_gaze_y = alpha * gaze_y + inv * self.smoothed_gaze_y
+
+        return (
+            self.smoothed_yaw,
+            self.smoothed_pitch,
+            self.smoothed_gaze_x,
+            self.smoothed_gaze_y,
+        )
+
+    def reset_ema(self) -> None:
+        """Mereset riwayat filter EMA saat wajah hilang dari frame."""
+        self.smoothed_yaw = None
+        self.smoothed_pitch = None
+        self.smoothed_gaze_x = None
+        self.smoothed_gaze_y = None
+
+    def calibrate(
+        self,
+        yaw: float,
+        pitch: float,
+        gaze_x: float = 0.50,
+        gaze_y: float = 0.00,
+    ) -> None:
+        """Menetapkan titik acuan orientasi kepala dan bola mata peserta."""
         self.baseline_yaw = yaw
         self.baseline_pitch = pitch
+        self.baseline_gaze_x = gaze_x
+        self.baseline_gaze_y = gaze_y
+        self.smoothed_yaw = yaw
+        self.smoothed_pitch = pitch
+        self.smoothed_gaze_x = gaze_x
+        self.smoothed_gaze_y = gaze_y
         self.is_calibrated = True
         self.clear_active_behavior()
 

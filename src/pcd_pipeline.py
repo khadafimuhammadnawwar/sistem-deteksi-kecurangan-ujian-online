@@ -128,3 +128,4 @@ def process_roi_pcd_panel(
         vis_canny=cv2.cvtColor(canny_edges, cv2.COLOR_GRAY2BGR),
         roi_edge_density=roi_edge_density,
     )
+
