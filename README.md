@@ -62,3 +62,8 @@ Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / No
 | **UJI-07** | Peserta meninggalkan kursi (latar ruangan terlihat) | $\ge 3.0\text{ s}$ | `IND-04` (Wajah Hilang) | ... |
 | **UJI-08** | Lensa kamera ditutup telapak tangan gelap | $\ge 2.0\text{ s}$ | `IND-05` (Gelap $\mu_Y < 35$) | ... |
 | **UJI-09** | Lensa kamera ditutup kertas HVS putih / tisu terang | $\ge 2.0\text{ s}$ | `IND-05` (Oklusi Canny $< 1\%$) | ... |
+
+---
+
+## Lisensi & Kontribusi
+Proyek ini dikembangkan untuk kebutuhan akademik Praktikum Pengolahan Citra Digital (PCD) D4 Teknik Informatika Politeknik Negeri Lhokseumawe (PNL).
