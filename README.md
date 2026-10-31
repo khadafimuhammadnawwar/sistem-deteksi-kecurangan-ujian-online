@@ -1,5 +1,10 @@
 # Sistem Deteksi Indikasi Kecurangan pada Ujian Online Berbasis Citra Digital (Mode 1: CBT Paperless / Teori)
 
+![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)
+![OpenCV](https://img.shields.io/badge/OpenCV-Computer%20Vision-green.svg)
+![MediaPipe](https://img.shields.io/badge/MediaPipe-FaceLandmarker%203D-orange.svg)
+![Tests](https://img.shields.io/badge/tests-10%20passed-brightgreen.svg)
+
 Proyek Akhir **Praktikum Pengolahan Citra Digital (Semester 5 — D4 Teknik Informatika PNL)**.  
 Sistem ini merupakan *Computer-Assisted Proctoring (Decision Support System / Non-Auto Banning)* untuk ujian teori berbasis komputer tanpa kertas buram. Sistem menggabungkan pipeline matematis **Pengolahan Citra Digital (PCD)** klasik dengan **L-Shaped 3D Gaze Ray-Casting (`cm`)** dan **5-Layer Anti-Spoof Lens Calibration**.
 
